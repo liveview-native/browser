@@ -7,25 +7,27 @@ BC := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 F=
 
 # OS and ARCH
-kernel = $(shell uname -ms)
-ifeq ($(kernel), Darwin arm64)
-	OS := macos
-	ARCH := aarch64
-else ifeq ($(kernel), Darwin x86_64)
-	OS := macos
-	ARCH := x86_64
-else ifeq ($(kernel), Linux aarch64)
-	OS := linux
-	ARCH := aarch64
-else ifeq ($(kernel), Linux arm64)
-	OS := linux
-	ARCH := aarch64
-else ifeq ($(kernel), Linux x86_64)
-	OS := linux
-	ARCH := x86_64
-else
-	$(error "Unhandled kernel: $(kernel)")
-endif
+OS := ios
+ARCH := aarch64
+# kernel = $(shell uname -ms)
+# ifeq ($(kernel), Darwin arm64)
+# 	OS := macos
+# 	ARCH := aarch64
+# else ifeq ($(kernel), Darwin x86_64)
+# 	OS := macos
+# 	ARCH := x86_64
+# else ifeq ($(kernel), Linux aarch64)
+# 	OS := linux
+# 	ARCH := aarch64
+# else ifeq ($(kernel), Linux arm64)
+# 	OS := linux
+# 	ARCH := aarch64
+# else ifeq ($(kernel), Linux x86_64)
+# 	OS := linux
+# 	ARCH := x86_64
+# else
+# 	$(error "Unhandled kernel: $(kernel)")
+# endif
 
 
 # Infos

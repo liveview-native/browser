@@ -96,10 +96,15 @@ fn getAndMakeAppDir(allocator: Allocator) ?[]const u8 {
     if (@import("builtin").is_test) {
         return allocator.dupe(u8, "/tmp") catch unreachable;
     }
-    const app_dir_path = std.fs.getAppDataDir(allocator, "lightpanda") catch |err| {
-        log.warn(.app, "get data dir", .{ .err = err });
+    // const app_dir_path = std.fs.getAppDataDir(allocator, "lightpanda") catch |err| {
+    //     log.warn(.app, "get data dir", .{ .err = err });
+    //     return null;
+    // };
+    const home_dir = std.posix.getenv("HOME") orelse {
+        // log.warn(.app, "get data dir", .{});
         return null;
     };
+    const app_dir_path = std.fs.path.join(allocator, &[_][]const u8{ home_dir, "Library", "Application Support", "" }) catch return null;
 
     std.fs.cwd().makePath(app_dir_path) catch |err| switch (err) {
         error.PathAlreadyExists => return app_dir_path,

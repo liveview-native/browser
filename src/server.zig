@@ -72,9 +72,10 @@ pub const Server = struct {
         self.listener = listener;
 
         try posix.setsockopt(listener, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
-        if (@hasDecl(posix.TCP, "NODELAY")) {
-            try posix.setsockopt(listener, posix.IPPROTO.TCP, posix.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1)));
-        }
+
+        // NODELAY exists on ios but is not declared in zig std.
+        const TCP_NODELAY = 0x01;
+        try posix.setsockopt(listener, posix.IPPROTO.TCP, TCP_NODELAY, &std.mem.toBytes(@as(c_int, 1)));
 
         try posix.bind(listener, &address.any, address.getOsSockLen());
         try posix.listen(listener, 1);

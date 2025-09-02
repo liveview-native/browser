@@ -59,7 +59,14 @@ pub fn build(b: *Build) !void {
         .link_libc = true,
         .link_libcpp = true,
     });
+
+    // lightpanda_module.addSystemIncludePath(.{ .cwd_relative = "/Applications/Xcode-16-3.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.4.sdk/usr/include" });
+
     try addDependencies(b, lightpanda_module, opts);
+
+    // make a static lib
+    const lib = b.addLibrary(.{ .name = "lightpanda", .use_llvm = true, .root_module = lightpanda_module, .linkage = .static });
+    b.installArtifact(lib);
 
     {
         // browser
@@ -176,6 +183,7 @@ fn addDependencies(b: *Build, mod: *Build.Module, opts: *Build.Step.Options) !vo
         const os = switch (target.result.os.tag) {
             .linux => "linux",
             .macos => "macos",
+            .ios => "ios",
             else => return error.UnsupportedPlatform,
         };
         var lib_path = try std.fmt.allocPrint(
@@ -387,6 +395,11 @@ fn addDependencies(b: *Build, mod: *Build.Module, opts: *Build.Step.Options) !vo
             .macos => {
                 // needed for proxying on mac
                 mod.addSystemFrameworkPath(.{ .cwd_relative = "/System/Library/Frameworks" });
+                mod.linkFramework("CoreFoundation", .{});
+                mod.linkFramework("SystemConfiguration", .{});
+            },
+            .ios => {
+                mod.addSystemFrameworkPath(.{ .cwd_relative = "/Applications/Xcode-16-3.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.4.sdk/System/Library/Frameworks" });
                 mod.linkFramework("CoreFoundation", .{});
                 mod.linkFramework("SystemConfiguration", .{});
             },
@@ -648,6 +661,8 @@ fn buildNghttp2(b: *Build, m: *Build.Module) !void {
 }
 
 fn buildCurl(b: *Build, m: *Build.Module) !void {
+    m.addIncludePath(.{ .cwd_relative = "/Applications/Xcode-16-3.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.4.sdk/usr/include" });
+
     const curl = b.addLibrary(.{
         .name = "curl",
         .root_module = m,
