@@ -1,11 +1,5 @@
 #/bin/zsh
 
-brew install pkg-config
+zig build -Dtarget=aarch64-ios-simulator -Dcpu=apple_m1
 
-make install
-
-mkdir -p v8/out/debug/obj/zig
-# curl -L -o v8/out/debug/obj/zig/libc_v8.a https://github.com/lightpanda-io/zig-v8-fork/releases/download/v0.1.28/libc_v8_13.6.233.8_macos_aarch64.a
-cp ../zig-v8-fork/libc_v8.a v8/out/debug/obj/zig/libc_v8.a
-
-zig build
+xcodebuild -create-xcframework -library zig-out/lib/liblightpanda.a -headers include -output lightpanda.xcframework

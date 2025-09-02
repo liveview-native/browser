@@ -65,7 +65,12 @@ pub fn build(b: *Build) !void {
     try addDependencies(b, lightpanda_module, opts);
 
     // make a static lib
-    const lib = b.addLibrary(.{ .name = "lightpanda", .use_llvm = true, .root_module = lightpanda_module, .linkage = .static });
+    const lib = b.addLibrary(.{
+        .name = "lightpanda",
+        .root_module = lightpanda_module,
+        .use_llvm = true,
+        .linkage = .static,
+    });
     b.installArtifact(lib);
 
     {
@@ -508,7 +513,7 @@ fn buildMbedtls(b: *Build, m: *Build.Module) !void {
     mbedtls.addIncludePath(b.path(root ++ "library"));
 
     mbedtls.addCSourceFiles(.{
-        .flags = &.{ "-Wno-nullability-completeness", "-march=armv8-a+crypto", "-Xclang", "-target-feature", "-Xclang", "+crypto" },
+        .flags = &.{"-Wno-nullability-completeness"},
         .files = &.{
             root ++ "library/aes.c",
             root ++ "library/aesni.c",

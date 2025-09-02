@@ -116,3 +116,7 @@ fn getAndMakeAppDir(allocator: Allocator) ?[]const u8 {
     };
     return app_dir_path;
 }
+
+export fn lightpanda_init() i32 {
+    return 5;
+}
