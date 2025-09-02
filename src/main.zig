@@ -184,74 +184,74 @@ fn run(alloc: Allocator) !void {
     }
 }
 
-const Command = struct {
+pub const Command = struct {
     mode: Mode,
     exec_name: []const u8,
 
-    fn tlsVerifyHost(self: *const Command) bool {
+    pub fn tlsVerifyHost(self: *const Command) bool {
         return switch (self.mode) {
             inline .serve, .fetch => |opts| opts.common.tls_verify_host,
             else => unreachable,
         };
     }
 
-    fn httpProxy(self: *const Command) ?[:0]const u8 {
+    pub fn httpProxy(self: *const Command) ?[:0]const u8 {
         return switch (self.mode) {
             inline .serve, .fetch => |opts| opts.common.http_proxy,
             else => unreachable,
         };
     }
 
-    fn proxyBearerToken(self: *const Command) ?[:0]const u8 {
+    pub fn proxyBearerToken(self: *const Command) ?[:0]const u8 {
         return switch (self.mode) {
             inline .serve, .fetch => |opts| opts.common.proxy_bearer_token,
             else => unreachable,
         };
     }
 
-    fn httpMaxConcurrent(self: *const Command) ?u8 {
+    pub fn httpMaxConcurrent(self: *const Command) ?u8 {
         return switch (self.mode) {
             inline .serve, .fetch => |opts| opts.common.http_max_concurrent,
             else => unreachable,
         };
     }
 
-    fn httpMaxHostOpen(self: *const Command) ?u8 {
+    pub fn httpMaxHostOpen(self: *const Command) ?u8 {
         return switch (self.mode) {
             inline .serve, .fetch => |opts| opts.common.http_max_host_open,
             else => unreachable,
         };
     }
 
-    fn httpConnectTiemout(self: *const Command) ?u31 {
+    pub fn httpConnectTiemout(self: *const Command) ?u31 {
         return switch (self.mode) {
             inline .serve, .fetch => |opts| opts.common.http_connect_timeout,
             else => unreachable,
         };
     }
 
-    fn httpTimeout(self: *const Command) ?u31 {
+    pub fn httpTimeout(self: *const Command) ?u31 {
         return switch (self.mode) {
             inline .serve, .fetch => |opts| opts.common.http_timeout,
             else => unreachable,
         };
     }
 
-    fn logLevel(self: *const Command) ?log.Level {
+    pub fn logLevel(self: *const Command) ?log.Level {
         return switch (self.mode) {
             inline .serve, .fetch => |opts| opts.common.log_level,
             else => unreachable,
         };
     }
 
-    fn logFormat(self: *const Command) ?log.Format {
+    pub fn logFormat(self: *const Command) ?log.Format {
         return switch (self.mode) {
             inline .serve, .fetch => |opts| opts.common.log_format,
             else => unreachable,
         };
     }
 
-    fn logFilterScopes(self: *const Command) ?[]const log.Scope {
+    pub fn logFilterScopes(self: *const Command) ?[]const log.Scope {
         return switch (self.mode) {
             inline .serve, .fetch => |opts| opts.common.log_filter_scopes,
             else => unreachable,
@@ -388,7 +388,7 @@ const Command = struct {
     }
 };
 
-fn parseArgs(allocator: Allocator) !Command {
+pub fn parseArgs(allocator: Allocator) !Command {
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
 

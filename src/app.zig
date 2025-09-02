@@ -117,6 +117,52 @@ fn getAndMakeAppDir(allocator: Allocator) ?[]const u8 {
     return app_dir_path;
 }
 
-export fn lightpanda_init() i32 {
-    return 5;
+const Browser = @import("browser/browser.zig").Browser;
+
+export fn lightpanda_app_init(input_url: [*:0]u8) usize {
+    const alloc = std.heap.c_allocator;
+
+    // _app is global to handle graceful shutdown.
+    const app = App.init(alloc, .{ .run_mode = .fetch, .tls_verify_host = false }) catch return 2;
+
+    const url = std.mem.span(input_url);
+
+    // browser
+    const browser = alloc.create(Browser) catch return 0;
+    browser.* = Browser.init(app) catch return 0;
+
+    var session = browser.newSession() catch return 0;
+
+    // page
+    const page = session.createPage() catch return 0;
+
+    _ = page.navigate(url, .{}) catch |err| switch (err) {
+        error.UnsupportedUriScheme, error.UriMissingHost => {
+            log.fatal(.app, "invalid fetch URL", .{ .err = err, .url = url });
+            return 0;
+        },
+        else => {
+            log.fatal(.app, "fetch error", .{ .err = err, .url = url });
+            return 0;
+        },
+    };
+
+    session.wait(5); // 5 seconds
+
+    // dump
+    var stdout = std.fs.File.stdout();
+    var writer = stdout.writer(&.{});
+    page.dump(.{
+        .page = page,
+    }, &writer.interface) catch return 0;
+    writer.interface.flush() catch return 0;
+
+    return @intFromPtr(browser);
+}
+
+export fn lightpanda_app_deinit(address: usize) void {
+    const browser = @as(?*Browser, @ptrFromInt(address)).?;
+    const app = browser.app;
+    browser.deinit();
+    app.deinit();
 }

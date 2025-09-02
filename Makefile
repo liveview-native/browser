@@ -11,7 +11,7 @@ SDK := $(shell xcrun --sdk iphonesimulator --show-sdk-path)
 CC := "$(shell xcrun --sdk iphonesimulator -f clang)"
 AR := "$(shell xcrun --sdk iphonesimulator -f ar)"
 RANLIB := "$(shell xcrun --sdk iphonesimulator -f ranlib)"
-CFLAGS := -isysroot $(SDK) -arch arm64 -mios-simulator-version-min=16.0
+CFLAGS := -isysroot $(SDK) -arch arm64 -mios-simulator-version-min=16.0 -fno-sanitize=undefined
 LDFLAGS := -isysroot $(SDK) -arch arm64 -mios-simulator-version-min=16.0
 
 # OS and ARCH
