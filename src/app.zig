@@ -119,31 +119,31 @@ fn getAndMakeAppDir(allocator: Allocator) ?[]const u8 {
 
 const Browser = @import("browser/browser.zig").Browser;
 
-export fn lightpanda_app_init(input_url: [*:0]u8) usize {
+export fn lightpanda_app_init(input_url: [*:0]u8) ?*anyopaque {
     const alloc = std.heap.c_allocator;
 
     // _app is global to handle graceful shutdown.
-    const app = App.init(alloc, .{ .run_mode = .fetch, .tls_verify_host = false }) catch return 2;
+    const app = App.init(alloc, .{ .run_mode = .fetch, .tls_verify_host = false }) catch return null;
 
     const url = std.mem.span(input_url);
 
     // browser
-    const browser = alloc.create(Browser) catch return 0;
-    browser.* = Browser.init(app) catch return 0;
+    const browser = alloc.create(Browser) catch return null;
+    browser.* = Browser.init(app) catch return null;
 
-    var session = browser.newSession() catch return 0;
+    var session = browser.newSession() catch return null;
 
     // page
-    const page = session.createPage() catch return 0;
+    const page = session.createPage() catch return null;
 
     _ = page.navigate(url, .{}) catch |err| switch (err) {
         error.UnsupportedUriScheme, error.UriMissingHost => {
             log.fatal(.app, "invalid fetch URL", .{ .err = err, .url = url });
-            return 0;
+            return null;
         },
         else => {
             log.fatal(.app, "fetch error", .{ .err = err, .url = url });
-            return 0;
+            return null;
         },
     };
 
@@ -154,14 +154,14 @@ export fn lightpanda_app_init(input_url: [*:0]u8) usize {
     var writer = stdout.writer(&.{});
     page.dump(.{
         .page = page,
-    }, &writer.interface) catch return 0;
-    writer.interface.flush() catch return 0;
+    }, &writer.interface) catch return null;
+    writer.interface.flush() catch return null;
 
-    return @intFromPtr(browser);
+    return browser;
 }
 
-export fn lightpanda_app_deinit(address: usize) void {
-    const browser = @as(?*Browser, @ptrFromInt(address)).?;
+export fn lightpanda_app_deinit(address: ?*anyopaque) void {
+    const browser: *Browser = @alignCast(@ptrCast(address.?));
     const app = browser.app;
     browser.deinit();
     app.deinit();

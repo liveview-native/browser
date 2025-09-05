@@ -3,7 +3,7 @@
 
 #include <stddef.h>
 
-size_t lightpanda_app_init(const char *url);
-void lightpanda_app_deinit(size_t address);
+void * lightpanda_app_init(const char *url);
+void lightpanda_app_deinit(void * address);
 
 #endif
