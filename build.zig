@@ -52,8 +52,8 @@ pub fn build(b: *Build) !void {
     // We're still using llvm because the new x86 backend seems to crash
     // with v8. This can be reproduced in zig-v8-fork.
 
-    const lightpanda_module = b.addModule("lightpanda", .{
-        .root_source_file = b.path("src/main.zig"),
+    const lvn = b.addModule("lvn", .{
+        .root_source_file = b.path("src/lvn.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -62,12 +62,12 @@ pub fn build(b: *Build) !void {
 
     // lightpanda_module.addSystemIncludePath(.{ .cwd_relative = "/Applications/Xcode-16-3.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.4.sdk/usr/include" });
 
-    try addDependencies(b, lightpanda_module, opts);
+    try addDependencies(b, lvn, opts);
 
     // make a static lib
     const lib = b.addLibrary(.{
-        .name = "lightpanda",
-        .root_module = lightpanda_module,
+        .name = "lvn",
+        .root_module = lvn,
         .use_llvm = true,
         .linkage = .static,
     });
@@ -102,7 +102,7 @@ pub fn build(b: *Build) !void {
 
         // compile
         const tests = b.addTest(.{
-            .root_module = lightpanda_module,
+            .root_module = lvn,
             .use_llvm = true,
             .test_runner = .{ .path = b.path("src/test_runner.zig"), .mode = .simple },
         });
