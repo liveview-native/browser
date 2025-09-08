@@ -100,6 +100,68 @@ pub const Page = struct {
     // of pending connections.
     request_intercepted: bool = false,
 
+    // threadsafe dom operations:
+    dom_lock: std.Thread.RwLock = .{},
+
+    const Futex = std.atomic.Value(u32);
+
+    pub fn Arg(F: type) type {
+        return @typeInfo(F).Fn.params[1].type.?;
+    }
+
+    pub fn Return(F: type) type {
+        return @typeInfo(F).Fn.return_type.?;
+    }
+
+    /// func must be a 2-arity function which takes *Page as its first parameter.
+    /// second parameter may be anything and domOperation specializes over whatever
+    /// payload you would like to use.
+    pub fn domOperation(self: *Page, func: anytype, arg: Arg(@TypeOf(func))) !Return(@TypeOf(func)) {
+        const A = Arg(@TypeOf(func));
+        const R = Return(@TypeOf(func));
+
+        const OpContext = struct {
+            page: *Page,
+            arg: A,
+            ret: R,
+            futex: Futex = .init(0)
+        };
+
+        const Wrapped = struct {
+            fn operation(ctx_ptr: *anyopaque) ?u32 {
+                const ctx: *OpContext = @alignCast(@ptrCast(ctx_ptr));
+                ctx.ret = @call(.auto, func, .{ ctx.page, ctx.arg });
+                std.Thread.Futex.wake(ctx.futex, 1);
+                return 0;
+            }
+        };
+
+        const ctx = try self.arena.create(OpContext);
+        defer self.arena.destroy(ctx);
+
+        {
+            // only the dispatching operation must be guarded by a lock.
+            self.dom_lock.lock();
+            defer self.dom_lock.unlock();
+            // assemble the Operation Context
+            ctx.* = .{
+                .page = self,
+                .arg = arg,
+                .ret = undefined
+            };
+            
+            self.scheduler.add(ctx, Wrapped.operation, 0, .{ .name = @typeName(@TypeOf(func)) });
+        }
+
+        // sleeplock on the Operation
+        while (ctx.futex.load(.Acquire) == 0) {
+            std.Thread.Futex.wait(&ctx.futex, 0);
+        }
+
+        // TODO: check for the case when the function doesn't get scheduled?
+        return ctx.retval.*;
+    }
+
     const Mode = union(enum) {
         pre: void,
         err: anyerror,
@@ -174,12 +236,19 @@ pub const Page = struct {
 
     fn runMicrotasks(ctx: *anyopaque) ?u32 {
         const self: *Page = @ptrCast(@alignCast(ctx));
+
+        self.dom_lock.lock();
+        defer self.dom_lock.unlock();
+        
         self.session.browser.runMicrotasks();
         return 5;
     }
 
     fn runMessageLoop(ctx: *anyopaque) ?u32 {
         const self: *Page = @ptrCast(@alignCast(ctx));
+        self.dom_lock.lock();
+        defer self.dom_lock.unlock();
+
         self.session.browser.runMessageLoop();
         return 100;
     }
@@ -322,7 +391,9 @@ pub const Page = struct {
                     // scheduler.run could trigger new http transfers, so do not
                     // store http_client.active BEFORE this call and then use
                     // it AFTER.
+                    self.dom_lock.lock();
                     const ms_to_next_task = try scheduler.runHighPriority();
+                    self.dom_lock.unlock();
 
                     if (try_catch.hasCaught()) {
                         const msg = (try try_catch.err(self.arena)) orelse "unknown";
@@ -340,7 +411,13 @@ pub const Page = struct {
                                 // we'd wait to long, might as well exit early.
                                 return;
                             }
-                            _ = try scheduler.runLowPriority();
+
+                            {
+                                self.dom_lock.lock();
+                                defer self.dom_lock.unlock();
+
+                                _ = try scheduler.runLowPriority();
+                            }
 
                             // We must use a u64 here b/c ms is a u32 and the
                             // conversion to ns can generate an integer
@@ -356,7 +433,12 @@ pub const Page = struct {
                         return;
                     }
 
-                    _ = try scheduler.runLowPriority();
+                    {
+                        self.dom_lock.lock();
+                        defer self.dom_lock.unlock();
+                        _ = try scheduler.runLowPriority();
+                    }
+
 
                     const request_intercepted = self.request_intercepted;
 

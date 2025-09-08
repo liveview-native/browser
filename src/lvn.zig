@@ -1,6 +1,7 @@
 const std = @import("std");
 const Browser = @import("browser/browser.zig").Browser;
 const App = @import("app.zig").App;
+const log = @import("log.zig");
 
 export fn lvn_init(input_url: [*:0]u8) ?*anyopaque {
     const alloc = std.heap.c_allocator;
