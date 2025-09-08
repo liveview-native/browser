@@ -106,11 +106,11 @@ pub const Page = struct {
     const Futex = std.atomic.Value(u32);
 
     pub fn Arg(F: type) type {
-        return @typeInfo(F).Fn.params[1].type.?;
+        return @typeInfo(F).@"fn".params[1].type.?;
     }
 
     pub fn Return(F: type) type {
-        return @typeInfo(F).Fn.return_type.?;
+        return @typeInfo(F).@"fn".return_type.?;
     }
 
     /// func must be a 2-arity function which takes *Page as its first parameter.
@@ -131,7 +131,7 @@ pub const Page = struct {
             fn operation(ctx_ptr: *anyopaque) ?u32 {
                 const ctx: *OpContext = @alignCast(@ptrCast(ctx_ptr));
                 ctx.ret = @call(.auto, func, .{ ctx.page, ctx.arg });
-                std.Thread.Futex.wake(ctx.futex, 1);
+                std.Thread.Futex.wake(&ctx.futex, 1);
                 return 0;
             }
         };
@@ -150,16 +150,16 @@ pub const Page = struct {
                 .ret = undefined
             };
             
-            self.scheduler.add(ctx, Wrapped.operation, 0, .{ .name = @typeName(@TypeOf(func)) });
+            try self.scheduler.add(ctx, Wrapped.operation, 0, .{ .name = @typeName(@TypeOf(func)) });
         }
 
         // sleeplock on the Operation
-        while (ctx.futex.load(.Acquire) == 0) {
+        while (ctx.futex.load(.acquire) == 0) {
             std.Thread.Futex.wait(&ctx.futex, 0);
         }
 
         // TODO: check for the case when the function doesn't get scheduled?
-        return ctx.retval.*;
+        if (R != void) { return ctx.ret.*; }
     }
 
     const Mode = union(enum) {
@@ -239,7 +239,7 @@ pub const Page = struct {
 
         self.dom_lock.lock();
         defer self.dom_lock.unlock();
-        
+
         self.session.browser.runMicrotasks();
         return 5;
     }

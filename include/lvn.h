@@ -4,7 +4,7 @@
 #include <stddef.h>
 
 void * lvn_init(const char *url);
-void lvn_run(void * lvn);
+void lvn_dump(void * lvn);
 void lvn_deinit(void * lvn);
 
 #endif

@@ -1,5 +1,6 @@
 const std = @import("std");
 const Browser = @import("browser/browser.zig").Browser;
+const Page = @import("browser/page.zig").Page;
 const App = @import("app.zig").App;
 const log = @import("log.zig");
 
@@ -31,21 +32,22 @@ export fn lvn_init(input_url: [*:0]u8) ?*anyopaque {
         },
     };
 
-    session.wait(5); // 5 seconds
+    return browser;
+}
 
-    // dump
+export fn lvn_dump(lvn: ?*anyopaque) void {
+    const browser: *Browser = @alignCast(@ptrCast(lvn.?));
+    const page: *Page = &browser.session.?.page.?;
+    page.domOperation(dump_page, {}) catch return;
+}
+
+fn dump_page(page: *Page, _: void) void {
     var stdout = std.fs.File.stdout();
     var writer = stdout.writer(&.{});
     page.dump(.{
         .page = page,
-    }, &writer.interface) catch return null;
-    writer.interface.flush() catch return null;
-
-    return browser;
-}
-
-export fn lvn_run(lvn: ?*anyopaque) void {
-    _ = lvn;
+    }, &writer.interface) catch return;
+    writer.interface.flush() catch return;
 }
 
 export fn lvn_deinit(lvn: ?*anyopaque) void {
