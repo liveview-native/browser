@@ -544,6 +544,8 @@ pub const Page = struct {
             log.err(.http, "navigate request", .{ .url = owned_url, .err = err });
             return err;
         };
+
+        std.debug.print("requested {s}\n", .{owned_url});
     }
 
     pub fn setCurrentScript(self: *Page, script: ?*parser.Script) !void {

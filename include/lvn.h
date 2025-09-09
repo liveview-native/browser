@@ -4,7 +4,8 @@
 #include <stddef.h>
 
 void * lvn_init(const char *url);
-void lvn_run(void * lvn);
+void lvn_dump_page(void * lvn);
+void lvn_dispatch_eventloop(void * lvn);
 void lvn_deinit(void * lvn);
 
 #endif
