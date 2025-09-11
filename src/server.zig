@@ -147,10 +147,20 @@ pub const Server = struct {
         var cdp = &client.mode.cdp;
         var last_message = timestamp();
         var ms_remaining = timeout_ms;
+
+        _ = try cdp.createBrowserContext();
+        _ = try cdp.browser_context.?.session.createPage();
+        const target_id = cdp.target_id_gen.next();
+        cdp.browser_context.?.target_id = target_id;
+        const session_id = cdp.session_id_gen.next();
+        cdp.browser_context.?.extra_headers.clearRetainingCapacity();
+        cdp.browser_context.?.session_id = session_id;
+
         while (true) {
             switch (cdp.pageWait(ms_remaining)) {
                 .extra_socket => {
                     if (try client.readSocket() == false) {
+                        log.info(.app, "CDP timeout", .{});
                         return;
                     }
                     last_message = timestamp();
@@ -162,6 +172,7 @@ pub const Server = struct {
                         return;
                     }
                     if (try client.readSocket() == false) {
+                        log.info(.app, "CDP timeout", .{});
                         return;
                     }
                     last_message = timestamp();
@@ -322,8 +333,69 @@ pub const Client = struct {
             // websocket upgrade) blocks until the first one times out.
             // We can avoid that by closing the connection. json_version_response
             // has a Connection: Close header too.
-            try posix.shutdown(self.socket, .recv);
+
+            // Chrome DevTools sends this, but then fails when this happens.
+            // try posix.shutdown(self.socket, .recv);
             return false;
+        }
+
+        const allocator = self.server.allocator;
+
+        if (std.mem.eql(u8, url, "/json/list") or std.mem.eql(u8, url, "/json/list?for_tab")) {
+            const response =
+                \\[{{
+                \\"description": "",
+                \\"devtoolsFrontendUrl": "/devtools/inspector.html?ws=localhost:9222/devtools/page/0",
+                \\"id": "0",
+                \\"title": "Lightpanda",
+                \\"type": "page",
+                \\"url": "lightpanda",
+                \\"webSocketDebuggerUrl": "ws://localhost:9222/devtools/page/0"
+                \\}}]
+            ;
+            const response_format =
+                "HTTP/1.1 200 OK\r\n" ++
+                "Content-Length: {d}\r\n" ++
+                "Connection: Close\r\n" ++
+                "Content-Type: application/json; charset=UTF-8\r\n\r\n" ++
+                response;
+            const len = std.fmt.count(response, .{});
+            const response_payload = try std.fmt.allocPrint(allocator, response_format, .{len});
+            defer allocator.free(response_payload);
+            try self.send(response_payload);
+            return false;
+        }
+
+        if (std.mem.startsWith(u8, url, "/json/new?")) {
+            const new_url = request[14..url_end];
+            std.debug.print("{s}", .{new_url});
+            const response =
+                \\{{
+                \\"description": "",
+                \\"devtoolsFrontendUrl": "/devtools/inspector.html?ws=localhost:9222/devtools/page/0",
+                \\"id": "0",
+                \\"title": "Lightpanda",
+                \\"type": "page",
+                \\"url": "{s}",
+                \\"webSocketDebuggerUrl": "ws://localhost:9222/devtools/page/0"
+                \\}}
+            ;
+            const response_format =
+                "HTTP/1.1 200 OK\r\n" ++
+                "Content-Length: {d}\r\n" ++
+                "Connection: Close\r\n" ++
+                "Content-Type: application/json; charset=UTF-8\r\n\r\n" ++
+                response;
+            const len = std.fmt.count(response, .{new_url});
+            const response_payload = try std.fmt.allocPrint(allocator, response_format, .{ len, new_url });
+            defer allocator.free(response_payload);
+            try self.send(response_payload);
+            return false;
+        }
+
+        if (std.mem.eql(u8, url, "/devtools/page/0")) {
+            try self.upgradeConnection(request);
+            return true;
         }
 
         return error.NotFound;
@@ -420,7 +492,16 @@ pub const Client = struct {
             break :blk res;
         };
 
-        self.mode = .{ .cdp = try CDP.init(self.server.app, self) };
+        const cdp = try CDP.init(self.server.app, self);
+
+        // const id = try cdp.createBrowserContext();
+        // std.debug.print("{s}", .{id});
+
+        // const page = try cdp.browser_context.?.session.createPage();
+        // const url = try std.fmt.allocPrint(page.arena, "http://localhost:8000", .{});
+        // try page.navigate(url, .{});
+
+        self.mode = .{ .cdp = cdp };
         return self.send(response);
     }
 
@@ -459,9 +540,7 @@ pub const Client = struct {
                     self.send(&CLOSE_NORMAL) catch {};
                     return false;
                 },
-                .text, .binary => if (cdp.handleMessage(msg.data) == false) {
-                    return false;
-                },
+                .text, .binary => if (cdp.handleMessage(msg.data) == false) {},
             }
             if (msg.cleanup_fragment) {
                 reader.cleanup();
@@ -913,7 +992,7 @@ fn buildJSONVersionResponse(
     allocator: Allocator,
     address: net.Address,
 ) ![]const u8 {
-    const body_format = "{{\"webSocketDebuggerUrl\": \"ws://{f}/\"}}";
+    const body_format = "{{\"Browser\": \"Chrome/72.0.3601.0\",\"Protocol-Version\": \"1.3\",\"User-Agent\": \"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3601.0 Safari/537.36\",\"V8-Version\": \"7.2.233\",\"WebKit-Version\":\"537.36 (@cfede9db1d154de0468cb0538479f34c0755a0f4)\",\"webSocketDebuggerUrl\": \"ws://{f}/\"}}";
     const body_len = std.fmt.count(body_format, .{address});
 
     // We send a Connection: Close (and actually close the connection)

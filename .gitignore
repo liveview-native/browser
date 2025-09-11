@@ -5,3 +5,4 @@ zig-out
 /vendor/libiconv/
 lightpanda.id
 /v8/
+.DS_Store

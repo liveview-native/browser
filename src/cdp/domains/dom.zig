@@ -62,7 +62,7 @@ pub fn processMessage(cmd: anytype) !void {
 fn getDocument(cmd: anytype) !void {
     const Params = struct {
         // CDP documentation implies that 0 isn't valid, but it _does_ work in Chrome
-        depth: i32 = 3,
+        depth: i32 = 10,
         pierce: bool = false,
     };
     const params = try cmd.params(Params) orelse Params{};
