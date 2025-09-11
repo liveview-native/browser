@@ -83,6 +83,21 @@ pub const DocumentFragment = struct {
             .include_root = false,
         });
     }
+    
+    pub fn get_firstElementChild(self: *parser.DocumentFragment) !?ElementUnion {
+        var children = try get_children(self);
+        return try children._item(0);
+    }
+
+    pub fn get_lastElementChild(self: *parser.DocumentFragment) !?ElementUnion {
+        // TODO we could check the last child node first, if it's an element,
+        // we can return it directly instead of looping twice over the
+        // children.
+        var children = try get_children(self);
+        const ln = try children.get_length();
+        if (ln == 0) return null;
+        return try children._item(ln - 1);
+    }
 
     pub fn _getElementById(self: *parser.DocumentFragment, id: []const u8) !?ElementUnion {
         const e = try parser.nodeGetElementById(@ptrCast(@alignCast(self)), id) orelse return null;
