@@ -229,13 +229,9 @@ pub const Writer = struct {
     }
 
     fn toJSON(self: *const Writer, node: *const Node, depth: usize, w: anytype) !void {
+        _ = depth;
         try w.beginObject();
         try self.writeCommon(node, false, w);
-
-        try w.objectField("children");
-        const child_count = try self.writeChildren(node, depth, w);
-        try w.objectField("childNodeCount");
-        try w.write(child_count);
 
         try w.endObject();
     }
@@ -267,6 +263,7 @@ pub const Writer = struct {
     }
 
     fn writeCommon(self: *const Writer, node: *const Node, include_child_count: bool, w: anytype) !void {
+        _ = include_child_count;
         try w.objectField("nodeId");
         try w.write(node.id);
 
@@ -306,11 +303,10 @@ pub const Writer = struct {
         try w.objectField("nodeValue");
         try w.write((try parser.nodeValue(n)) orelse "");
 
-        if (include_child_count) {
-            try w.objectField("childNodeCount");
-            const child_nodes = try parser.nodeGetChildNodes(n);
-            try w.write(try parser.nodeListLength(child_nodes));
-        }
+        try w.objectField("children");
+        const child_count = try self.writeChildren(node, 0, w);
+        try w.objectField("childNodeCount");
+        try w.write(child_count);
 
         try w.objectField("documentURL");
         try w.write(null);
