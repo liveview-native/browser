@@ -27,7 +27,9 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 
 const log = @import("log.zig");
 const App = @import("app.zig").App;
+const Browser = @import("browser/browser.zig").Browser;
 const CDP = @import("cdp/cdp.zig").CDP;
+const BrowserContext = @import("cdp/cdp.zig").BrowserContext;
 
 const TimeoutCheck = std.time.ns_per_ms * 100;
 
@@ -40,18 +42,20 @@ const MAX_MESSAGE_SIZE = 512 * 1024 + 14 + 140;
 
 pub const Server = struct {
     app: *App,
+    browser: *Browser,
     allocator: Allocator,
     client: ?posix.socket_t,
     listener: ?posix.socket_t,
     json_version_response: []const u8,
 
-    pub fn init(app: *App, address: net.Address) !Server {
+    pub fn init(app: *App, browser: *Browser, address: net.Address) !Server {
         const allocator = app.allocator;
         const json_version_response = try buildJSONVersionResponse(allocator, address);
         errdefer allocator.free(json_version_response);
 
         return .{
             .app = app,
+            .browser = browser,
             .client = null,
             .listener = null,
             .allocator = allocator,
@@ -154,13 +158,28 @@ pub const Server = struct {
             // do AND it knows if we're waiting on an intercept request, and will
             // eagerly return control here in those cases.
             if (client.mode == .cdp) {
-                _ = try client.mode.cdp.createBrowserContext();
-                _ = try client.mode.cdp.browser_context.?.session.createPage();
-                const target_id = client.mode.cdp.target_id_gen.next();
-                client.mode.cdp.browser_context.?.target_id = target_id;
-                const session_id = client.mode.cdp.session_id_gen.next();
-                client.mode.cdp.browser_context.?.extra_headers.clearRetainingCapacity();
-                client.mode.cdp.browser_context.?.session_id = session_id;
+                if (client.mode.cdp.browser_context == null) {
+                    _ = try client.mode.cdp.createBrowserContextWithSession(&client.mode.cdp.browser.session.?);
+                    std.debug.print("made context with session", .{});
+                    // createBrowserContext()
+                    // const id = client.mode.cdp.browser_context_id_gen.next();
+
+                    // client.mode.cdp.browser_context = @as(BrowserContext(CDP), undefined);
+                    // const browser_context = &client.mode.cdp.browser_context.?;
+
+                    // try BrowserContext(CDP).init_with_session(browser_context, &client.mode.cdp.browser.session.?, id, &client.mode.cdp);
+
+                    // client.mode.cdp.browser_context.?.session.page = client.mode.cdp.browser.session.?.page;
+
+                    // _ = try client.mode.cdp.browser_context.?.session.createPage();
+                    // const page = client.mode.cdp.browser.session.?.page;
+                    const target_id = client.mode.cdp.target_id_gen.next();
+                    client.mode.cdp.browser_context.?.target_id = target_id;
+                    const session_id = client.mode.cdp.session_id_gen.next();
+                    client.mode.cdp.browser_context.?.extra_headers.clearRetainingCapacity();
+                    client.mode.cdp.browser_context.?.session_id = session_id;
+                    std.debug.print("setup ids", .{});
+                }
 
                 client.mode.cdp.pageWait();
             }
@@ -455,7 +474,7 @@ pub const Client = struct {
             break :blk res;
         };
 
-        const cdp = try CDP.init(self.server.app, self);
+        const cdp = try CDP.init_with_browser(self.server.app, self.server.browser, self);
 
         // const id = try cdp.createBrowserContext();
         // std.debug.print("{s}", .{id});
@@ -997,19 +1016,22 @@ const backend_supports_vectors = switch (builtin.zig_backend) {
 fn mask(m: []const u8, payload: []u8) void {
     var data = payload;
 
-    if (!comptime backend_supports_vectors) return simpleMask(m, data);
+    _ = &data;
+    return simpleMask(m, data);
 
-    const vector_size = std.simd.suggestVectorLength(u8) orelse @sizeOf(usize);
-    if (data.len >= vector_size) {
-        const mask_vector = std.simd.repeat(vector_size, @as(@Vector(4, u8), m[0..4].*));
-        while (data.len >= vector_size) {
-            const slice = data[0..vector_size];
-            const masked_data_slice: @Vector(vector_size, u8) = slice.*;
-            slice.* = masked_data_slice ^ mask_vector;
-            data = data[vector_size..];
-        }
-    }
-    simpleMask(m, data);
+    // if (!comptime backend_supports_vectors) return simpleMask(m, data);
+
+    // const vector_size = std.simd.suggestVectorLength(u8) orelse @sizeOf(usize);
+    // if (data.len >= vector_size) {
+    //     const mask_vector = std.simd.repeat(vector_size, @as(@Vector(4, u8), m[0..4].*));
+    //     while (data.len >= vector_size) {
+    //         const slice = data[0..vector_size];
+    //         const masked_data_slice: @Vector(vector_size, u8) = slice.*;
+    //         slice.* = masked_data_slice ^ mask_vector;
+    //         data = data[vector_size..];
+    //     }
+    // }
+    // simpleMask(m, data);
 }
 
 // Used when SIMD isn't available, or for any remaining part of the message

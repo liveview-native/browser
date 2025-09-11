@@ -3,6 +3,34 @@ const Browser = @import("browser/browser.zig").Browser;
 const Page = @import("browser/page.zig").Page;
 const App = @import("app.zig").App;
 const log = @import("log.zig");
+const Server = @import("server.zig").Server;
+
+export fn lvn_devtools_run(lvn: ?*anyopaque, addr: std.posix.sockaddr.in) void {
+    _ = addr;
+    const browser: *Browser = @ptrCast(@alignCast(lvn.?));
+
+    // devtools server
+    log.debug(.app, "startup", .{ .mode = "serve" });
+    const address = std.net.Address.parseIp4("127.0.0.1", 9222) catch |err| {
+        std.debug.print("address failed to parse: {}\n", .{err});
+        @panic("server failed to init");
+    };
+
+    // const address = std.net.Address{ .in = .{ .sa = addr } };
+
+    // _server is global to handle graceful shutdown.
+    var server = Server.init(browser.app, browser, address) catch |err| {
+        std.debug.print("server failed to init: {}\n", .{err});
+        @panic("server failed to init");
+    };
+    _ = &server;
+    defer server.deinit();
+
+    server.run(address, 9999) catch |err| {
+        std.debug.print("server failed to run: {}\n", .{err});
+        @panic("server failed to run");
+    };
+}
 
 export fn lvn_init(input_url: [*:0]u8) ?*anyopaque {
     log.opts.level = .info;

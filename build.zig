@@ -52,6 +52,7 @@ pub fn build(b: *Build) !void {
     // We're still using llvm because the new x86 backend seems to crash
     // with v8. This can be reproduced in zig-v8-fork.
 
+    // target.result.cpu.features.addFeature(std.Target.aarch64.Feature.);
     const lvn = b.addModule("lvn", .{
         .root_source_file = b.path("src/lvn.zig"),
         .target = target,
@@ -59,6 +60,7 @@ pub fn build(b: *Build) !void {
         .link_libc = true,
         .link_libcpp = true,
     });
+    // lvn.linkSystemLibrary("compiler_rt", .{});
 
     // lightpanda_module.addSystemIncludePath(.{ .cwd_relative = "/Applications/Xcode-16-3.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.4.sdk/usr/include" });
 
@@ -71,13 +73,26 @@ pub fn build(b: *Build) !void {
         .use_llvm = true,
         .linkage = .static,
     });
+    lib.bundle_compiler_rt = true;
+    // lib.linkLibC();
+    // lib.linkLibCpp();
+    // lib.root_module.resolved_target.?.result.cpu.model = std.Target.Cpu.Model.baseline(.aarch64, .{ .tag = .ios, .version_range = std.Target.Os.VersionRange.default(.aarch64, .ios, .simulator) });
     b.installArtifact(lib);
+
+    // const lightpanda_module = b.addModule("lightpanda", .{
+    //     .root_source_file = b.path("src/main.zig"),
+    //     .target = target,
+    //     .optimize = optimize,
+    //     .link_libc = true,
+    //     .link_libcpp = true,
+    // });
+    // try addDependencies(b, lightpanda_module, opts);
 
     {
         // browser
         // -------
 
-        // compile and install
+        // // compile and install
         // const exe = b.addExecutable(.{
         //     .name = "lightpanda",
         //     .use_llvm = true,
@@ -85,13 +100,13 @@ pub fn build(b: *Build) !void {
         // });
         // b.installArtifact(exe);
 
-        // run
+        // // run
         // const run_cmd = b.addRunArtifact(exe);
         // if (b.args) |args| {
         //     run_cmd.addArgs(args);
         // }
 
-        // step
+        // // step
         // const run_step = b.step("run", "Run the app");
         // run_step.dependOn(&run_cmd.step);
     }
