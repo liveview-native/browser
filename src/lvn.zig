@@ -5,6 +5,7 @@ const App = @import("app.zig").App;
 const log = @import("log.zig");
 
 export fn lvn_init(input_url: [*:0]u8) ?*anyopaque {
+    log.opts.level = .info;
     const alloc = std.heap.c_allocator;
 
     // _app is global to handle graceful shutdown.
