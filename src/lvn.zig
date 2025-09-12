@@ -32,7 +32,7 @@ export fn lvn_init(input_url: [*:0]u8) ?*anyopaque {
         },
     };
 
-    session.wait(5);
+    _ = session.wait(5);
 
     return browser;
 }
@@ -56,7 +56,7 @@ fn dumpPage(page: *Page, _: void) void {
 export fn lvn_dispatch_eventloop(lvn: ?*anyopaque) void {
     const browser: *Browser = @ptrCast(@alignCast(lvn.?));
     // eagerly jump through the javascript event loop, clearing events on the stack.
-    browser.session.?.page.?.wait(0);
+    _ = browser.session.?.page.?.wait(0);
 }
 
 export fn lvn_deinit(lvn: ?*anyopaque) void {

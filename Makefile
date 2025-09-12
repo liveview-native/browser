@@ -15,7 +15,7 @@ CFLAGS := -isysroot $(SDK) -arch arm64 -mios-simulator-version-min=16.0 -fno-san
 LDFLAGS := -isysroot $(SDK) -arch arm64 -mios-simulator-version-min=16.0
 
 # OS and ARCH
-OS := ios
+OS := macos
 ARCH := aarch64
 # kernel = $(shell uname -ms)
 # ifeq ($(kernel), Darwin arm64)
