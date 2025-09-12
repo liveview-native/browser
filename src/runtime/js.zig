@@ -197,6 +197,7 @@ pub fn Env(comptime State: type, comptime WebApis: type) type {
 
             // This is the callback that runs whenever a module is dynamically imported.
             isolate.setHostImportModuleDynamicallyCallback(JsContext.dynamicModuleCallback);
+            isolate.setPromiseRejectCallback(promiseRejectCallback);
 
             isolate.enter();
             errdefer isolate.exit();
@@ -326,6 +327,39 @@ pub fn Env(comptime State: type, comptime WebApis: type) type {
             v8.HandleScope.init(&handle_scope, self.isolate);
             defer handle_scope.deinit();
             self.isolate.lowMemoryNotification();
+        }
+
+        pub fn dumpMemoryStats(self: *Self) void {
+            const stats = self.isolate.getHeapStatistics();
+            std.debug.print(
+                \\ Total Heap Size: {d}
+                \\ Total Heap Size Executable: {d}
+                \\ Total Physical Size: {d}
+                \\ Total Available Size: {d}
+                \\ Used Heap Size: {d}
+                \\ Heap Size Limit: {d}
+                \\ Malloced Memory: {d}
+                \\ External Memory: {d}
+                \\ Peak Malloced Memory: {d}
+                \\ Number Of Native Contexts: {d}
+                \\ Number Of Detached Contexts: {d}
+                \\ Total Global Handles Size: {d}
+                \\ Used Global Handles Size: {d}
+                \\ Zap Garbage: {any}
+                \\
+            , .{ stats.total_heap_size, stats.total_heap_size_executable, stats.total_physical_size, stats.total_available_size, stats.used_heap_size, stats.heap_size_limit, stats.malloced_memory, stats.external_memory, stats.peak_malloced_memory, stats.number_of_native_contexts, stats.number_of_detached_contexts, stats.total_global_handles_size, stats.used_global_handles_size, stats.does_zap_garbage });
+        }
+
+        fn promiseRejectCallback(v8_msg: v8.C_PromiseRejectMessage) callconv(.c) void {
+            const msg = v8.PromiseRejectMessage.initFromC(v8_msg);
+            const isolate = msg.getPromise().toObject().getIsolate();
+            const v8_context = isolate.getCurrentContext();
+            const context: *JsContext = @ptrFromInt(v8_context.getEmbedderData(1).castTo(v8.BigInt).getUint64());
+
+            const value =
+                if (msg.getValue()) |v8_value| valueToString(context.call_arena, v8_value, isolate, v8_context) catch |err| @errorName(err) else "no value";
+
+            log.debug(.js, "unhandled rejection", .{ .value = value });
         }
 
         // ExecutionWorld closely models a JS World.
@@ -1380,7 +1414,7 @@ pub fn Env(comptime State: type, comptime WebApis: type) type {
                     },
                     .@"struct" => {
                         // We don't want to duplicate the code for this, so we call
-                        // the actual coversion function.
+                        // the actual conversion function.
                         const value = (try self.jsValueToStruct(named_function, T, js_value)) orelse {
                             return .{ .invalid = {} };
                         };
@@ -1479,7 +1513,7 @@ pub fn Env(comptime State: type, comptime WebApis: type) type {
 
                 // We were hoping to find the module in our cache, and thus used
                 // the short-lived call_arena to create the normalized_specifier.
-                // But now this'll live for the lifetime of the context.
+                // But now this will live for the lifetime of the context.
                 const arena = self.context_arena;
                 const owned_specifier = try arena.dupe(u8, normalized_specifier);
                 try self.module_cache.put(arena, owned_specifier, PersistentModule.init(self.isolate, m));
@@ -1516,12 +1550,12 @@ pub fn Env(comptime State: type, comptime WebApis: type) type {
                 }
 
                 const op = js_obj.getInternalField(0).castTo(v8.External).get();
-                const toa: *TaggedAnyOpaque = @ptrCast(@alignCast(op));
+                const tao: *TaggedAnyOpaque = @ptrCast(@alignCast(op));
                 const expected_type_index = @field(TYPE_LOOKUP, type_name);
 
-                var type_index = toa.index;
+                var type_index = tao.index;
                 if (type_index == expected_type_index) {
-                    return @ptrCast(@alignCast(toa.ptr));
+                    return @ptrCast(@alignCast(tao.ptr));
                 }
 
                 const meta_lookup = self.meta_lookup;
@@ -1533,7 +1567,7 @@ pub fn Env(comptime State: type, comptime WebApis: type) type {
                 // ...unless, the proto is behind a pointer, then total_offset will
                 // get reset to 0, and our base_ptr will move to the address
                 // referenced by the proto field.
-                var base_ptr: usize = @intFromPtr(toa.ptr);
+                var base_ptr: usize = @intFromPtr(tao.ptr);
 
                 // search through the prototype tree
                 while (true) {
@@ -1655,6 +1689,11 @@ pub fn Env(comptime State: type, comptime WebApis: type) type {
                         specifier: []const u8,
                         module: v8.Persistent(v8.Module),
                         resolver: v8.Persistent(v8.PromiseResolver),
+
+                        pub fn deinit(ev: *@This()) void {
+                            ev.module.deinit();
+                            ev.resolver.deinit();
+                        }
                     };
 
                     const ev_data = try self.context_arena.create(EvaluationData);
@@ -1671,6 +1710,7 @@ pub fn Env(comptime State: type, comptime WebApis: type) type {
                             const cb_isolate = cb_info.getIsolate();
                             const cb_context = cb_isolate.getCurrentContext();
                             const data: *EvaluationData = @ptrCast(@alignCast(cb_info.getExternalValue()));
+                            defer data.deinit();
                             const cb_module = data.module.castToModule();
                             const cb_resolver = data.resolver.castToPromiseResolver();
 
@@ -1685,6 +1725,7 @@ pub fn Env(comptime State: type, comptime WebApis: type) type {
                             const cb_info = v8.FunctionCallbackInfo{ .handle = info.? };
                             const cb_context = cb_info.getIsolate().getCurrentContext();
                             const data: *EvaluationData = @ptrCast(@alignCast(cb_info.getExternalValue()));
+                            defer data.deinit();
                             const cb_resolver = data.resolver.castToPromiseResolver();
 
                             log.err(.js, "dynamic import failed", .{ .specifier = data.specifier });
@@ -1697,6 +1738,7 @@ pub fn Env(comptime State: type, comptime WebApis: type) type {
                             .specifier = specifier,
                             .line = try_catch.sourceLineNumber() orelse 0,
                         });
+                        defer ev_data.deinit();
                         const error_msg = v8.String.initUtf8(iso, "Evaluation is a promise");
                         _ = resolver.reject(ctx, error_msg.toValue());
                         return;
@@ -2083,7 +2125,7 @@ pub fn Env(comptime State: type, comptime WebApis: type) type {
             // a shorthand method to return either the entire stack message
             // or just the exception message
             // - in Debug mode return the stack if available
-            // - otherwhise return the exception if available
+            // - otherwise return the exception if available
             // the caller needs to deinit the string returned
             pub fn err(self: TryCatch, allocator: Allocator) !?[]const u8 {
                 if (builtin.mode == .Debug) {
@@ -2564,7 +2606,7 @@ pub fn Env(comptime State: type, comptime WebApis: type) type {
             // If you're trying to implement setter, read:
             // https://groups.google.com/g/v8-users/c/8tahYBsHpgY/m/IteS7Wn2AAAJ
             // The issue I had was
-            // (a) where to attache it: does it go ont he instance_template
+            // (a) where to attache it: does it go on the instance_template
             //     instead of the prototype?
             // (b) defining the getter or query to respond with the
             //     PropertyAttribute to indicate if the property can be set
@@ -2736,7 +2778,7 @@ pub fn Env(comptime State: type, comptime WebApis: type) type {
                     }
 
                     if (T == Function) {
-                        // we're returnig a callback
+                        // we're returning a callback
                         return value.func.toValue();
                     }
 
@@ -2861,8 +2903,8 @@ pub fn Env(comptime State: type, comptime WebApis: type) type {
             }
         };
 
-        // Callback called on global's property mssing.
-        // Return true to intercept the exectution or false to let the call
+        // Callback called on global's property missing.
+        // Return true to intercept the execution or false to let the call
         // continue the chain.
         pub const GlobalMissingCallback = struct {
             ptr: *anyopaque,
@@ -2936,10 +2978,10 @@ fn isComplexAttributeType(ti: std.builtin.Type) bool {
     };
 }
 
-// Responsible for calling Zig functions from JS invokations. This could
+// Responsible for calling Zig functions from JS invocations. This could
 // probably just contained in ExecutionWorld, but having this specific logic, which
 // is somewhat repetitive between constructors, functions, getters, etc contained
-// here does feel like it makes it clenaer.
+// here does feel like it makes it cleaner.
 fn Caller(comptime JsContext: type, comptime State: type) type {
     return struct {
         js_context: *JsContext,
@@ -3341,7 +3383,7 @@ fn Caller(comptime JsContext: type, comptime State: type) type {
             var is_variadic = false;
 
             {
-                // This is going to get complicated. If the last Zig paremeter
+                // This is going to get complicated. If the last Zig parameter
                 // is a slice AND the corresponding javascript parameter is
                 // NOT an an array, then we'll treat it as a variadic.
 

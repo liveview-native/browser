@@ -26,6 +26,7 @@ const Page = @import("../page.zig").Page;
 const urlStitch = @import("../../url.zig").URL.stitch;
 const URL = @import("../url/url.zig").URL;
 const Node = @import("../dom/node.zig").Node;
+const NodeUnion = @import("../dom/node.zig").Union;
 const Element = @import("../dom/element.zig").Element;
 const DataSet = @import("DataSet.zig");
 
@@ -85,6 +86,7 @@ pub const Interfaces = .{
     HTMLScriptElement,
     HTMLSourceElement,
     HTMLSpanElement,
+    HTMLSlotElement,
     HTMLStyleElement,
     HTMLTableElement,
     HTMLTableCaptionElement,
@@ -975,6 +977,21 @@ pub const HTMLScriptElement = struct {
         return try parser.elementRemoveAttribute(parser.scriptToElt(self), "nomodule");
     }
 
+    pub fn get_nonce(self: *parser.Script) !?[]const u8 {
+        return try parser.elementGetAttribute(
+            parser.scriptToElt(self),
+            "nonce",
+        ) orelse "";
+    }
+
+    pub fn set_nonce(self: *parser.Script, v: []const u8) !void {
+        try parser.elementSetAttribute(
+            parser.scriptToElt(self),
+            "nonce",
+            v,
+        );
+    }
+
     pub fn get_onload(self: *parser.Script, page: *Page) !?Env.Function {
         const state = page.getNodeState(@ptrCast(@alignCast(self))) orelse return null;
         return state.onload;
@@ -1006,6 +1023,101 @@ pub const HTMLSpanElement = struct {
     pub const Self = parser.Span;
     pub const prototype = *HTMLElement;
     pub const subtype = .node;
+};
+
+pub const HTMLSlotElement = struct {
+    pub const Self = parser.Slot;
+    pub const prototype = *HTMLElement;
+    pub const subtype = .node;
+
+    pub fn get_name(self: *parser.Slot) !?[]const u8 {
+        return (try parser.elementGetAttribute(@ptrCast(@alignCast(self)), "name")) orelse "";
+    }
+
+    pub fn set_name(self: *parser.Slot, value: []const u8) !void {
+        return parser.elementSetAttribute(@ptrCast(@alignCast(self)), "name", value);
+    }
+
+    const AssignedNodesOpts = struct {
+        flatten: bool = false,
+    };
+    pub fn _assignedNodes(self: *parser.Slot, opts_: ?AssignedNodesOpts, page: *Page) ![]NodeUnion {
+        const opts = opts_ orelse AssignedNodesOpts{ .flatten = false };
+
+        if (try findAssignedSlotNodes(self, opts, page)) |nodes| {
+            return nodes;
+        }
+
+        if (!opts.flatten) {
+            return &.{};
+        }
+
+        const node: *parser.Node = @ptrCast(@alignCast(self));
+        const nl = try parser.nodeGetChildNodes(node);
+        const len = try parser.nodeListLength(nl);
+        if (len == 0) {
+            return &.{};
+        }
+
+        var assigned = try page.call_arena.alloc(NodeUnion, len);
+        var i: usize = 0;
+        while (true) : (i += 1) {
+            const child = try parser.nodeListItem(nl, @intCast(i)) orelse break;
+            assigned[i] = try Node.toInterface(child);
+        }
+        return assigned[0..i];
+    }
+
+    fn findAssignedSlotNodes(self: *parser.Slot, opts: AssignedNodesOpts, page: *Page) !?[]NodeUnion {
+        if (opts.flatten) {
+            log.debug(.web_api, "not implemented", .{ .feature = "HTMLSlotElement flatten assignedNodes" });
+        }
+
+        const slot_name = try parser.elementGetAttribute(@ptrCast(@alignCast(self)), "name");
+        const node: *parser.Node = @ptrCast(@alignCast(self));
+        var root = try parser.nodeGetRootNode(node);
+        if (page.getNodeState(root)) |state| {
+            if (state.shadow_root) |sr| {
+                root = @ptrCast(@alignCast(sr.host));
+            }
+        }
+
+        var arr: std.ArrayList(NodeUnion) = .empty;
+        const w = @import("../dom/walker.zig").WalkerChildren{};
+        var next: ?*parser.Node = null;
+        while (true) {
+            next = try w.get_next(root, next) orelse break;
+            if (try parser.nodeType(next.?) != .element) {
+                if (slot_name == null) {
+                    // default slot (with no name), takes everything
+                    try arr.append(page.call_arena, try Node.toInterface(next.?));
+                }
+                continue;
+            }
+            const el: *parser.Element = @ptrCast(@alignCast(next.?));
+            const element_slot = try parser.elementGetAttribute(el, "slot");
+
+            if (nullableStringsAreEqual(slot_name, element_slot)) {
+                // either they're the same string or they are both null
+                try arr.append(page.call_arena, try Node.toInterface(next.?));
+                continue;
+            }
+        }
+        return if (arr.items.len == 0) null else arr.items;
+    }
+
+    fn nullableStringsAreEqual(a: ?[]const u8, b: ?[]const u8) bool {
+        if (a == null and b == null) {
+            return true;
+        }
+        if (a) |aa| {
+            const bb = b orelse return false;
+            return std.mem.eql(u8, aa, bb);
+        }
+
+        // a is null, but b isn't (else the first guard clause would have hit)
+        return false;
+    }
 };
 
 pub const HTMLStyleElement = struct {
@@ -1168,6 +1280,7 @@ pub fn toInterfaceFromTag(comptime T: type, e: *parser.Element, tag: parser.Tag)
         .select => .{ .HTMLSelectElement = @as(*parser.Select, @ptrCast(e)) },
         .source => .{ .HTMLSourceElement = @as(*parser.Source, @ptrCast(e)) },
         .span => .{ .HTMLSpanElement = @as(*parser.Span, @ptrCast(e)) },
+        .slot => .{ .HTMLSlotElement = @as(*parser.Slot, @ptrCast(e)) },
         .style => .{ .HTMLStyleElement = @as(*parser.Style, @ptrCast(e)) },
         .table => .{ .HTMLTableElement = @as(*parser.Table, @ptrCast(e)) },
         .caption => .{ .HTMLTableCaptionElement = @as(*parser.TableCaption, @ptrCast(e)) },
@@ -1187,328 +1300,35 @@ pub fn toInterfaceFromTag(comptime T: type, e: *parser.Element, tag: parser.Tag)
 }
 
 const testing = @import("../../testing.zig");
-test "Browser.HTML.Element" {
-    var runner = try testing.jsRunner(testing.tracking_allocator, .{});
-    defer runner.deinit();
-
-    try runner.testCases(&.{
-        .{ "let link = document.getElementById('link')", "undefined" },
-        .{ "link.target", "" },
-        .{ "link.target = '_blank'", "_blank" },
-        .{ "link.target", "_blank" },
-        .{ "link.target = ''", "" },
-
-        .{ "link.href", "foo" },
-        .{ "link.href = 'https://lightpanda.io/'", "https://lightpanda.io/" },
-        .{ "link.href", "https://lightpanda.io/" },
-
-        .{ "link.origin", "https://lightpanda.io" },
-
-        .{ "link.host = 'lightpanda.io:443'", "lightpanda.io:443" },
-        .{ "link.host", "lightpanda.io:443" },
-        .{ "link.port", "443" },
-        .{ "link.hostname", "lightpanda.io" },
-
-        .{ "link.host = 'lightpanda.io'", "lightpanda.io" },
-        .{ "link.host", "lightpanda.io" },
-        .{ "link.port", "" },
-        .{ "link.hostname", "lightpanda.io" },
-
-        .{ "link.host", "lightpanda.io" },
-        .{ "link.hostname", "lightpanda.io" },
-        .{ "link.hostname = 'foo.bar'", "foo.bar" },
-        .{ "link.href", "https://foo.bar/" },
-
-        .{ "link.search", "" },
-        .{ "link.search = 'q=bar'", "q=bar" },
-        .{ "link.search", "?q=bar" },
-        .{ "link.href", "https://foo.bar/?q=bar" },
-
-        .{ "link.hash", "" },
-        .{ "link.hash = 'frag'", "frag" },
-        .{ "link.hash", "#frag" },
-        .{ "link.href", "https://foo.bar/?q=bar#frag" },
-
-        .{ "link.port", "" },
-        .{ "link.port = '443'", "443" },
-        .{ "link.host", "foo.bar:443" },
-        .{ "link.hostname", "foo.bar" },
-        .{ "link.href", "https://foo.bar:443/?q=bar#frag" },
-        .{ "link.port = null", "null" },
-        .{ "link.href", "https://foo.bar/?q=bar#frag" },
-
-        .{ "link.href = 'foo'", "foo" },
-
-        .{ "link.type", "" },
-        .{ "link.type = 'text/html'", "text/html" },
-        .{ "link.type", "text/html" },
-        .{ "link.type = ''", "" },
-
-        .{ "link.text", "OK" },
-        .{ "link.text = 'foo'", "foo" },
-        .{ "link.text", "foo" },
-        .{ "link.text = 'OK'", "OK" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "let script = document.createElement('script')", "undefined" },
-        .{ "script.src = 'foo.bar'", "foo.bar" },
-
-        .{ "script.async = true", "true" },
-        .{ "script.async", "true" },
-        .{ "script.async = false", "false" },
-        .{ "script.async", "false" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "const backup = document.getElementById('content')", "undefined" },
-        .{ "document.getElementById('content').innerText = 'foo';", "foo" },
-        .{ "document.getElementById('content').innerText", "foo" },
-        .{ "document.getElementById('content').innerHTML = backup; true;", "true" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "let click_count = 0;", "undefined" },
-        .{ "let clickCbk = function() { click_count++ }", "undefined" },
-        .{ "document.getElementById('content').addEventListener('click', clickCbk);", "undefined" },
-        .{ "document.getElementById('content').click()", "undefined" },
-        .{ "click_count", "1" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "let style = document.getElementById('content').style", "undefined" },
-        .{ "style.cssText = 'color: red; font-size: 12px; margin: 5px !important;'", "color: red; font-size: 12px; margin: 5px !important;" },
-        .{ "style.length", "3" },
-        .{ "style.setProperty('background-color', 'blue')", "undefined" },
-        .{ "style.getPropertyValue('background-color')", "blue" },
-        .{ "style.length", "4" },
-    }, .{});
-
-    // Image
-    try runner.testCases(&.{
-        // Testing constructors
-        .{ "(new Image).width", "0" },
-        .{ "(new Image).height", "0" },
-        .{ "(new Image(4)).width", "4" },
-        .{ "(new Image(4, 6)).height", "6" },
-
-        // Testing ulong property
-        .{ "let fruit = new Image", null },
-        .{ "fruit.width", "0" },
-        .{ "fruit.width = 5", "5" },
-        .{ "fruit.width", "5" },
-        .{ "fruit.width = '15'", "15" },
-        .{ "fruit.width", "15" },
-        .{ "fruit.width = 'apple'", "apple" },
-        .{ "fruit.width;", "0" },
-
-        // Testing string property
-        .{ "let lyric = new Image", null },
-        .{ "lyric.src", "" },
-        .{ "lyric.src = 'okay'", "okay" },
-        .{ "lyric.src", "okay" },
-        .{ "lyric.src = 15", "15" },
-        .{ "lyric.src", "15" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "let a = document.createElement('a');", null },
-        .{ "a.href", "" },
-        .{ "a.host", "" },
-        .{ "a.href = 'about'", null },
-        .{ "a.href", "https://lightpanda.io/opensource-browser/about" },
-    }, .{});
-
-    // detached node cannot be focused
-    try runner.testCases(&.{
-        .{ "const focused = document.activeElement", null },
-        .{ "document.createElement('a').focus()", null },
-        .{ "document.activeElement === focused", "true" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "let l2 = document.createElement('link');", null },
-        .{ "l2.href", "" },
-        .{ "l2.href = 'https://lightpanda.io/opensource-browser/15'", null },
-        .{ "l2.href", "https://lightpanda.io/opensource-browser/15" },
-
-        .{ "l2.href = '/over/9000'", null },
-        .{ "l2.href", "https://lightpanda.io/over/9000" },
-    }, .{});
+test "Browser: HTML.Element" {
+    try testing.htmlRunner("html/element.html");
 }
 
-test "Browser.HTML.Element.DataSet" {
-    var runner = try testing.jsRunner(testing.tracking_allocator, .{ .html = "<div id=x data-power='over 9000' data-empty data-some-long-key=ok></div>" });
-    defer runner.deinit();
-
-    try runner.testCases(&.{ .{ "let div = document.getElementById('x')", null }, .{ "div.dataset.nope", "undefined" }, .{ "div.dataset.power", "over 9000" }, .{ "div.dataset.empty", "" }, .{ "div.dataset.someLongKey", "ok" }, .{ "delete div.dataset.power", "true" }, .{ "div.dataset.power", "undefined" } }, .{});
+test "Browser: HTML.HtmlLinkElement" {
+    try testing.htmlRunner("html/link.html");
 }
 
-test "Browser.HTML.HtmlInputElement.properties" {
-    var runner = try testing.jsRunner(testing.tracking_allocator, .{ .url = "https://lightpanda.io/noslashattheend" });
-    defer runner.deinit();
-    var alloc = std.heap.ArenaAllocator.init(runner.allocator);
-    defer alloc.deinit();
-    const arena = alloc.allocator();
-
-    try runner.testCases(&.{.{ "let elem_input = document.createElement('input')", null }}, .{});
-
-    try runner.testCases(&.{.{ "elem_input.form", "null" }}, .{}); // Initial value
-    // Valid input.form is tested separately :Browser.HTML.HtmlInputElement.propeties.form
-    try testProperty(arena, &runner, "elem_input.form", "null", &.{.{ .input = "'foo'" }}); // Invalid
-
-    try runner.testCases(&.{.{ "elem_input.accept", "" }}, .{}); // Initial value
-    try testProperty(arena, &runner, "elem_input.accept", null, &str_valids); // Valid
-
-    try runner.testCases(&.{.{ "elem_input.alt", "" }}, .{}); // Initial value
-    try testProperty(arena, &runner, "elem_input.alt", null, &str_valids); // Valid
-
-    try runner.testCases(&.{.{ "elem_input.disabled", "false" }}, .{}); // Initial value
-    try testProperty(arena, &runner, "elem_input.disabled", null, &bool_valids); // Valid
-
-    try runner.testCases(&.{.{ "elem_input.maxLength", "-1" }}, .{}); // Initial value
-    try testProperty(arena, &runner, "elem_input.maxLength", null, &.{.{ .input = "5" }}); // Valid
-    try testProperty(arena, &runner, "elem_input.maxLength", "0", &.{.{ .input = "'banana'" }}); // Invalid
-    try runner.testCases(&.{.{ "try { elem_input.maxLength = -45 } catch(e) {e}", "Error: NegativeValueNotAllowed" }}, .{}); // Error
-
-    try runner.testCases(&.{.{ "elem_input.name", "" }}, .{}); // Initial value
-    try testProperty(arena, &runner, "elem_input.name", null, &str_valids); // Valid
-
-    try runner.testCases(&.{.{ "elem_input.readOnly", "false" }}, .{}); // Initial value
-    try testProperty(arena, &runner, "elem_input.readOnly", null, &bool_valids); // Valid
-
-    try runner.testCases(&.{.{ "elem_input.size", "20" }}, .{}); // Initial value
-    try testProperty(arena, &runner, "elem_input.size", null, &.{.{ .input = "5" }}); // Valid
-    try testProperty(arena, &runner, "elem_input.size", "20", &.{.{ .input = "-26" }}); // Invalid
-    try runner.testCases(&.{.{ "try { elem_input.size = 0 } catch(e) {e}", "Error: ZeroNotAllowed" }}, .{}); // Error
-    try runner.testCases(&.{.{ "try { elem_input.size = 'banana' } catch(e) {e}", "Error: ZeroNotAllowed" }}, .{}); // Error
-
-    try runner.testCases(&.{.{ "elem_input.src", "" }}, .{}); // Initial value
-    try testProperty(arena, &runner, "elem_input.src", null, &.{
-        .{ .input = "'foo'", .expected = "https://lightpanda.io/foo" }, // TODO stitch should work with spaces -> %20
-        .{ .input = "-3", .expected = "https://lightpanda.io/-3" },
-        .{ .input = "''", .expected = "https://lightpanda.io/noslashattheend" },
-    });
-
-    try runner.testCases(&.{.{ "elem_input.type", "text" }}, .{}); // Initial value
-    try testProperty(arena, &runner, "elem_input.type", null, &.{.{ .input = "'checkbox'", .expected = "checkbox" }}); // Valid
-    try testProperty(arena, &runner, "elem_input.type", "text", &.{.{ .input = "'5'" }}); // Invalid
-
-    // Properties that are related
-    try runner.testCases(&.{
-        .{ "let input_checked = document.createElement('input')", null },
-        .{ "input_checked.defaultChecked", "false" },
-        .{ "input_checked.checked", "false" },
-
-        .{ "input_checked.defaultChecked = true", "true" },
-        .{ "input_checked.defaultChecked", "true" },
-        .{ "input_checked.checked", "true" }, // Also perceived as true
-
-        .{ "input_checked.checked = false", "false" },
-        .{ "input_checked.defaultChecked", "true" },
-        .{ "input_checked.checked", "false" },
-
-        .{ "input_checked.defaultChecked = true", "true" },
-        .{ "input_checked.checked", "false" }, // Still false
-    }, .{});
-    try runner.testCases(&.{
-        .{ "let input_value = document.createElement('input')", null },
-        .{ "input_value.defaultValue", "" },
-        .{ "input_value.value", "" },
-
-        .{ "input_value.defaultValue = 3.1", "3.1" },
-        .{ "input_value.defaultValue", "3.1" },
-        .{ "input_value.value", "3.1" }, // Also perceived as 3.1
-
-        .{ "input_value.value = 'mango'", "mango" },
-        .{ "input_value.defaultValue", "3.1" },
-        .{ "input_value.value", "mango" },
-
-        .{ "input_value.defaultValue = true", "true" },
-        .{ "input_value.value", "mango" }, // Still mango
-    }, .{});
+test "Browser: HTML.HtmlImageElement" {
+    try testing.htmlRunner("html/image.html");
 }
 
-test "Browser.HTML.HtmlInputElement.properties.form" {
-    var runner = try testing.jsRunner(testing.tracking_allocator, .{ .html = 
-        \\ <form action="test.php" target="_blank">
-        \\   <p>
-        \\     <label>First name: <input type="text" name="first-name" /></label>
-        \\   </p>
-        \\ </form>
-    });
-    defer runner.deinit();
-
-    try runner.testCases(&.{
-        .{ "let elem_input = document.querySelector('input')", null },
-        .{ "elem_input.form", "[object HTMLFormElement]" }, // Initial value
-        .{ "elem_input.form = 'foo'", null },
-        .{ "elem_input.form", "[object HTMLFormElement]" }, // Invalid
-    }, .{});
+test "Browser: HTML.HtmlInputElement" {
+    try testing.htmlRunner("html/input.html");
 }
 
-test "Browser.HTML.HTMLTemplateElement" {
-    var runner = try testing.jsRunner(testing.tracking_allocator, .{ .html = "<div id=c></div>" });
-    defer runner.deinit();
-
-    try runner.testCases(&.{
-        .{ "let t = document.createElement('template')", null },
-        .{ "let d = document.createElement('div')", null },
-        .{ "d.id = 'abc'", null },
-        .{ "t.content.append(d)", null },
-        .{ "document.getElementById('abc')", "null" },
-        .{ "document.getElementById('c').appendChild(t.content.cloneNode(true))", null },
-        .{ "document.getElementById('abc').id", "abc" },
-        .{ "t.innerHTML = '<span>over</span><p>9000!</p>';", null },
-        .{ "t.content.childNodes.length", "2" },
-        .{ "t.content.childNodes[0].tagName", "SPAN" },
-        .{ "t.content.childNodes[0].innerHTML", "over" },
-        .{ "t.content.childNodes[1].tagName", "P" },
-        .{ "t.content.childNodes[1].innerHTML", "9000!" },
-    }, .{});
+test "Browser: HTML.HtmlTemplateElement" {
+    try testing.htmlRunner("html/template.html");
 }
 
-test "Browser.HTML.HTMLStyleElement" {
-    var runner = try testing.jsRunner(testing.tracking_allocator, .{ .html = "" });
-    defer runner.deinit();
-
-    try runner.testCases(&.{
-        .{ "let s = document.createElement('style')", null },
-        .{ "s.sheet.type", "text/css" },
-        .{ "s.sheet == s.sheet", "true" },
-        .{ "document.createElement('style').sheet == s.sheet", "false" },
-    }, .{});
+test "Browser: HTML.HtmlStyleElement" {
+    try testing.htmlRunner("html/style.html");
 }
 
-const Check = struct {
-    input: []const u8,
-    expected: ?[]const u8 = null, // Needed when input != expected
-};
-const bool_valids = [_]Check{
-    .{ .input = "true" },
-    .{ .input = "''", .expected = "false" },
-    .{ .input = "13.5", .expected = "true" },
-};
-const str_valids = [_]Check{
-    .{ .input = "'foo'", .expected = "foo" },
-    .{ .input = "5", .expected = "5" },
-    .{ .input = "''", .expected = "" },
-    .{ .input = "document", .expected = "[object HTMLDocument]" },
-};
+test "Browser: HTML.HtmlScriptElement" {
+    try testing.htmlRunner("html/script/script.html");
+    try testing.htmlRunner("html/script/inline_defer.html");
+}
 
-// .{ "elem.type = '5'", "5" },
-// .{ "elem.type", "text" },
-fn testProperty(
-    arena: std.mem.Allocator,
-    runner: *testing.JsRunner,
-    elem_dot_prop: []const u8,
-    always: ?[]const u8, // Ignores checks' expected if set
-    checks: []const Check,
-) !void {
-    for (checks) |check| {
-        try runner.testCases(&.{
-            .{ try std.mem.concat(arena, u8, &.{ elem_dot_prop, " = ", check.input }), null },
-            .{ elem_dot_prop, always orelse check.expected orelse check.input },
-        }, .{});
-    }
+test "Browser: HTML.HtmlSlotElement" {
+    try testing.htmlRunner("html/slot.html");
 }

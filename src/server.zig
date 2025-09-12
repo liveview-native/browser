@@ -40,6 +40,7 @@ const MAX_MESSAGE_SIZE = 512 * 1024 + 14 + 140;
 
 pub const Server = struct {
     app: *App,
+    shutdown: bool,
     allocator: Allocator,
     client: ?posix.socket_t,
     listener: ?posix.socket_t,
@@ -54,16 +55,20 @@ pub const Server = struct {
             .app = app,
             .client = null,
             .listener = null,
+            .shutdown = false,
             .allocator = allocator,
             .json_version_response = json_version_response,
         };
     }
 
     pub fn deinit(self: *Server) void {
-        self.allocator.free(self.json_version_response);
+        self.shutdown = true;
         if (self.listener) |listener| {
             posix.close(listener);
         }
+        // *if* server.run is running, we should really wait for it to return
+        // before existing from here.
+        self.allocator.free(self.json_version_response);
     }
 
     pub fn run(self: *Server, address: net.Address, timeout_ms: i32) !void {
@@ -83,6 +88,9 @@ pub const Server = struct {
         log.info(.app, "server running", .{ .address = address });
         while (true) {
             const socket = posix.accept(listener, null, null, posix.SOCK.NONBLOCK) catch |err| {
+                if (self.shutdown) {
+                    return;
+                }
                 log.err(.app, "CDP accept", .{ .err = err });
                 std.Thread.sleep(std.time.ns_per_s);
                 continue;
@@ -117,44 +125,57 @@ pub const Server = struct {
         client.* = try Client.init(socket, self);
         defer client.deinit();
 
-        var last_message = timestamp();
         var http = &self.app.http;
+        http.monitorSocket(socket);
+        defer http.unmonitorSocket();
+
+        std.debug.assert(client.mode == .http);
         while (true) {
-            if (http.poll(20, socket)) {
-                const n = posix.read(socket, client.readBuf()) catch |err| {
-                    log.warn(.app, "CDP read", .{ .err = err });
-                    return;
-                };
-                if (n == 0) {
-                    log.info(.app, "CDP disconnect", .{});
-                    return;
-                }
-                const more = client.processData(n) catch false;
-                if (!more) {
-                    return;
-                }
-                last_message = timestamp();
-            } else if (timestamp() - last_message > timeout_ms) {
+            if (http.poll(timeout_ms) != .extra_socket) {
                 log.info(.app, "CDP timeout", .{});
                 return;
             }
-            // We have 3 types of "events":
-            // - Incoming CDP messages
-            // - Network events from the browser
-            // - Timeouts from the browser
 
-            // The call to http.poll above handles the first two (which is why
-            // we pass the client socket to it). But browser timeouts aren't
-            // hooked into that. So we need to go to the browser page (if there
-            // is one), and ask it to process any pending events. That action
-            // doesn't starve #2 (Network events from the browser), because
-            // page.wait() handles that too. But it does starve #1 (Incoming CDP
-            // messages). The good news is that, while the Page is mostly
-            // unaware of CDP, it will only block if it actually has something to
-            // do AND it knows if we're waiting on an intercept request, and will
-            // eagerly return control here in those cases.
+            if (try client.readSocket() == false) {
+                return;
+            }
+
             if (client.mode == .cdp) {
-                client.mode.cdp.pageWait();
+                break; // switch to our CDP loop
+            }
+        }
+
+        var cdp = &client.mode.cdp;
+        var last_message = timestamp();
+        var ms_remaining = timeout_ms;
+        while (true) {
+            switch (cdp.pageWait(ms_remaining)) {
+                .extra_socket => {
+                    if (try client.readSocket() == false) {
+                        return;
+                    }
+                    last_message = timestamp();
+                    ms_remaining = timeout_ms;
+                },
+                .no_page => {
+                    if (http.poll(ms_remaining) != .extra_socket) {
+                        log.info(.app, "CDP timeout", .{});
+                        return;
+                    }
+                    if (try client.readSocket() == false) {
+                        return;
+                    }
+                    last_message = timestamp();
+                    ms_remaining = timeout_ms;
+                },
+                .done => {
+                    const elapsed = timestamp() - last_message;
+                    if (elapsed > ms_remaining) {
+                        log.info(.app, "CDP timeout", .{});
+                        return;
+                    }
+                    ms_remaining -= @as(i32, @intCast(elapsed));
+                },
             }
         }
     }
@@ -209,6 +230,20 @@ pub const Client = struct {
         }
         self.reader.deinit();
         self.send_arena.deinit();
+    }
+
+    fn readSocket(self: *Client) !bool {
+        const n = posix.read(self.socket, self.readBuf()) catch |err| {
+            log.warn(.app, "CDP read", .{ .err = err });
+            return false;
+        };
+
+        if (n == 0) {
+            log.info(.app, "CDP disconnect", .{});
+            return false;
+        }
+
+        return self.processData(n) catch false;
     }
 
     fn readBuf(self: *Client) []u8 {
@@ -898,8 +933,7 @@ fn buildJSONVersionResponse(
 }
 
 fn timestamp() u32 {
-    const ts = std.posix.clock_gettime(std.posix.CLOCK.MONOTONIC) catch unreachable;
-    return @intCast(ts.sec);
+    return @import("datetime.zig").timestamp();
 }
 
 // In-place string lowercase

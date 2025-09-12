@@ -179,10 +179,11 @@ fn arePatternsSupported(patterns: []RequestPattern) bool {
 }
 
 pub fn requestIntercept(arena: Allocator, bc: anytype, intercept: *const Notification.RequestIntercept) !void {
-    // unreachable because we _have_ to have a page.
-    const session_id = bc.session_id orelse unreachable;
+    // detachTarget could be called, in which case, we still have a page doing
+    // things, but no session.
+    const session_id = bc.session_id orelse return;
+
     const target_id = bc.target_id orelse unreachable;
-    const page = bc.session.currentPage() orelse unreachable;
 
     // We keep it around to wait for modifications to the request.
     // NOTE: we assume whomever created the request created it with a lifetime of the Page.
@@ -211,7 +212,6 @@ pub fn requestIntercept(arena: Allocator, bc: anytype, intercept: *const Notific
     // Await either continueRequest, failRequest or fulfillRequest
 
     intercept.wait_for_interception.* = true;
-    page.request_intercepted = true;
 }
 
 fn continueRequest(cmd: anytype) !void {
@@ -228,8 +228,6 @@ fn continueRequest(cmd: anytype) !void {
     if (params.interceptResponse) {
         return error.NotImplemented;
     }
-
-    const page = bc.session.currentPage() orelse return error.PageNotLoaded;
 
     var intercept_state = &bc.intercept_state;
     const request_id = try idFromRequestId(params.requestId);
@@ -265,12 +263,7 @@ fn continueRequest(cmd: anytype) !void {
         transfer.req.body = body;
     }
 
-    try bc.cdp.browser.http_client.process(transfer);
-
-    if (intercept_state.empty()) {
-        page.request_intercepted = false;
-    }
-
+    try bc.cdp.browser.http_client.continueTransfer(transfer);
     return cmd.sendResult(null, .{});
 }
 
@@ -291,8 +284,6 @@ fn continueWithAuth(cmd: anytype) !void {
             password: []const u8 = "",
         },
     })) orelse return error.InvalidParams;
-
-    const page = bc.session.currentPage() orelse return error.PageNotLoaded;
 
     var intercept_state = &bc.intercept_state;
     const request_id = try idFromRequestId(params.requestId);
@@ -322,12 +313,7 @@ fn continueWithAuth(cmd: anytype) !void {
     );
 
     transfer.reset();
-    try bc.cdp.browser.http_client.process(transfer);
-
-    if (intercept_state.empty()) {
-        page.request_intercepted = false;
-    }
-
+    try bc.cdp.browser.http_client.continueTransfer(transfer);
     return cmd.sendResult(null, .{});
 }
 
@@ -368,7 +354,7 @@ fn fulfillRequest(cmd: anytype) !void {
         body = buf;
     }
 
-    try transfer.fulfill(params.responseCode, params.responseHeaders orelse &.{}, body);
+    try bc.cdp.browser.http_client.fulfillTransfer(transfer, params.responseCode, params.responseHeaders orelse &.{}, body);
 
     return cmd.sendResult(null, .{});
 }
@@ -380,13 +366,11 @@ fn failRequest(cmd: anytype) !void {
         errorReason: ErrorReason,
     })) orelse return error.InvalidParams;
 
-    const page = bc.session.currentPage() orelse return error.PageNotLoaded;
-
     var intercept_state = &bc.intercept_state;
     const request_id = try idFromRequestId(params.requestId);
 
     const transfer = intercept_state.remove(request_id) orelse return error.RequestNotFound;
-    defer transfer.abort();
+    defer bc.cdp.browser.http_client.abortTransfer(transfer);
 
     log.info(.cdp, "request intercept", .{
         .state = "fail",
@@ -394,18 +378,15 @@ fn failRequest(cmd: anytype) !void {
         .url = transfer.uri,
         .reason = params.errorReason,
     });
-
-    if (intercept_state.empty()) {
-        page.request_intercepted = false;
-    }
     return cmd.sendResult(null, .{});
 }
 
 pub fn requestAuthRequired(arena: Allocator, bc: anytype, intercept: *const Notification.RequestAuthRequired) !void {
-    // unreachable because we _have_ to have a page.
-    const session_id = bc.session_id orelse unreachable;
+    // detachTarget could be called, in which case, we still have a page doing
+    // things, but no session.
+    const session_id = bc.session_id orelse return;
+
     const target_id = bc.target_id orelse unreachable;
-    const page = bc.session.currentPage() orelse unreachable;
 
     // We keep it around to wait for modifications to the request.
     // NOTE: we assume whomever created the request created it with a lifetime of the Page.
@@ -442,7 +423,6 @@ pub fn requestAuthRequired(arena: Allocator, bc: anytype, intercept: *const Noti
     // Await continueWithAuth
 
     intercept.wait_for_interception.* = true;
-    page.request_intercepted = true;
 }
 
 // Get u64 from requestId which is formatted as: "INTERCEPT-{d}"

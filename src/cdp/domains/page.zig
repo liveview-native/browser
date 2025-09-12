@@ -78,12 +78,16 @@ fn getFrameTree(cmd: anytype) !void {
 }
 
 fn setLifecycleEventsEnabled(cmd: anytype) !void {
-    // const params = (try cmd.params(struct {
-    //     enabled: bool,
-    // })) orelse return error.InvalidParams;
+    const params = (try cmd.params(struct {
+        enabled: bool,
+    })) orelse return error.InvalidParams;
 
     const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
-    bc.page_life_cycle_events = true;
+    if (params.enabled) {
+        try bc.lifecycleEventsEnable();
+    } else {
+        bc.lifecycleEventsDisable();
+    }
     return cmd.sendResult(null, .{});
 }
 
@@ -158,22 +162,17 @@ fn navigate(cmd: anytype) !void {
 }
 
 pub fn pageNavigate(arena: Allocator, bc: anytype, event: *const Notification.PageNavigate) !void {
-    // I don't think it's possible that we get these notifications and don't
-    // have these things setup.
-    std.debug.assert(bc.session.page != null);
+    // detachTarget could be called, in which case, we still have a page doing
+    // things, but no session.
+    const session_id = bc.session_id orelse return;
 
-    var cdp = bc.cdp;
-
-    if (event.opts.reason != .address_bar) {
-        bc.loader_id = bc.cdp.loader_id_gen.next();
-    }
-
+    bc.loader_id = bc.cdp.loader_id_gen.next();
     const loader_id = bc.loader_id;
     const target_id = bc.target_id orelse unreachable;
-    const session_id = bc.session_id orelse unreachable;
 
     bc.reset();
 
+    var cdp = bc.cdp;
     const reason_: ?[]const u8 = switch (event.opts.reason) {
         .anchor => "anchorClick",
         .script => "scriptInitiated",
@@ -291,16 +290,14 @@ pub fn pageCreated(bc: anytype, page: *Page) !void {
 }
 
 pub fn pageNavigated(bc: anytype, event: *const Notification.PageNavigated) !void {
-    // I don't think it's possible that we get these notifications and don't
-    // have these things setup.
-    std.debug.assert(bc.session.page != null);
-
-    var cdp = bc.cdp;
-    const timestamp = event.timestamp;
+    // detachTarget could be called, in which case, we still have a page doing
+    // things, but no session.
+    const session_id = bc.session_id orelse return;
     const loader_id = bc.loader_id;
     const target_id = bc.target_id orelse unreachable;
-    const session_id = bc.session_id orelse unreachable;
+    const timestamp = event.timestamp;
 
+    var cdp = bc.cdp;
     // frameNavigated event
     try cdp.sendEvent("Page.frameNavigated", .{
         .type = "Navigation",
@@ -357,6 +354,29 @@ pub fn pageNavigated(bc: anytype, event: *const Notification.PageNavigated) !voi
     // frameStoppedLoading
     return cdp.sendEvent("Page.frameStoppedLoading", .{
         .frameId = target_id,
+    }, .{ .session_id = session_id });
+}
+
+pub fn pageNetworkIdle(bc: anytype, event: *const Notification.PageNetworkIdle) !void {
+    return sendPageLifecycle(bc, "networkIdle", event.timestamp);
+}
+
+pub fn pageNetworkAlmostIdle(bc: anytype, event: *const Notification.PageNetworkAlmostIdle) !void {
+    return sendPageLifecycle(bc, "networkAlmostIdle", event.timestamp);
+}
+
+fn sendPageLifecycle(bc: anytype, name: []const u8, timestamp: u32) !void {
+    // detachTarget could be called, in which case, we still have a page doing
+    // things, but no session.
+    const session_id = bc.session_id orelse return;
+
+    const loader_id = bc.loader_id;
+    const target_id = bc.target_id orelse unreachable;
+    return bc.cdp.sendEvent("Page.lifecycleEvent", LifecycleEvent{
+        .name = name,
+        .frameId = target_id,
+        .loaderId = loader_id,
+        .timestamp = timestamp,
     }, .{ .session_id = session_id });
 }
 

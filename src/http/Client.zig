@@ -50,8 +50,17 @@ const Method = Http.Method;
 // those other http requests.
 pub const Client = @This();
 
-// count of active requests
+// Count of active requests
 active: usize,
+
+// Count of intercepted requests. This is to help deal with intercepted requests.
+// The client doesn't track intercepted transfers. If a request is intercepted,
+// the client forgets about it and requires the interceptor to continue or abort
+// it. That works well, except if we only rely on active, we might think there's
+// no more network activity when, with interecepted requests, there might be more
+// in the future. (We really only need this to properly emit a 'networkIdle' and
+// 'networkAlmostIdle' Page.lifecycleEvent in CDP).
+intercepted: usize,
 
 // curl has 2 APIs: easy and multi. Multi is like a combination of some I/O block
 // (e.g. epoll) and a bunch of pools. You add/remove easys to the multiple and
@@ -87,6 +96,11 @@ notification: ?*Notification = null,
 // restoring, this originally-configured value is what it goes to.
 http_proxy: ?[:0]const u8 = null,
 
+// libcurl can monitor arbitrary sockets. Currently, we ever [maybe] want to
+// monitor the CDP client socket, so we've done the simplest thing possible
+// by having this single optional field
+extra_socket: ?posix.socket_t = null,
+
 const TransferQueue = std.DoublyLinkedList;
 
 pub fn init(allocator: Allocator, ca_blob: ?c.curl_blob, opts: Http.Opts) !*Client {
@@ -110,6 +124,7 @@ pub fn init(allocator: Allocator, ca_blob: ?c.curl_blob, opts: Http.Opts) !*Clie
     client.* = .{
         .queue = .{},
         .active = 0,
+        .intercepted = 0,
         .multi = multi,
         .handles = handles,
         .blocking = blocking,
@@ -145,9 +160,9 @@ pub fn abort(self: *Client) void {
 
     var n = self.queue.first;
     while (n) |node| {
+        n = node.next;
         const transfer: *Transfer = @fieldParentPtr("_node", node);
         self.transfer_pool.destroy(transfer);
-        n = node.next;
     }
     self.queue = .{};
 
@@ -162,11 +177,7 @@ pub fn abort(self: *Client) void {
     }
 }
 
-const TickOpts = struct {
-    timeout_ms: i32 = 0,
-    poll_socket: ?posix.socket_t = null,
-};
-pub fn tick(self: *Client, opts: TickOpts) !bool {
+pub fn tick(self: *Client, timeout_ms: i32) !PerformStatus {
     while (true) {
         if (self.handles.hasAvailable() == false) {
             break;
@@ -178,7 +189,7 @@ pub fn tick(self: *Client, opts: TickOpts) !bool {
         const handle = self.handles.getFreeHandle().?;
         try self.makeRequest(handle, transfer);
     }
-    return self.perform(opts.timeout_ms, opts.poll_socket);
+    return self.perform(timeout_ms);
 }
 
 pub fn request(self: *Client, req: Request) !void {
@@ -190,6 +201,10 @@ pub fn request(self: *Client, req: Request) !void {
         var wait_for_interception = false;
         notification.dispatch(.http_request_intercept, &.{ .transfer = transfer, .wait_for_interception = &wait_for_interception });
         if (wait_for_interception) {
+            self.intercepted += 1;
+            if (builtin.mode == .Debug) {
+                transfer._intercepted = true;
+            }
             // The user is send an invitation to intercept this request.
             return;
         }
@@ -199,14 +214,41 @@ pub fn request(self: *Client, req: Request) !void {
 }
 
 // Above, request will not process if there's an interception request. In such
-// cases, the interecptor is expected to call process to continue the transfer
+// cases, the interecptor is expected to call resume to continue the transfer
 // or transfer.abort() to abort it.
-pub fn process(self: *Client, transfer: *Transfer) !void {
+fn process(self: *Client, transfer: *Transfer) !void {
     if (self.handles.getFreeHandle()) |handle| {
         return self.makeRequest(handle, transfer);
     }
 
     self.queue.append(&transfer._node);
+}
+
+// For an intercepted request
+pub fn continueTransfer(self: *Client, transfer: *Transfer) !void {
+    if (builtin.mode == .Debug) {
+        std.debug.assert(transfer._intercepted);
+    }
+    self.intercepted -= 1;
+    return self.process(transfer);
+}
+
+// For an intercepted request
+pub fn abortTransfer(self: *Client, transfer: *Transfer) void {
+    if (builtin.mode == .Debug) {
+        std.debug.assert(transfer._intercepted);
+    }
+    self.intercepted -= 1;
+    transfer.abort();
+}
+
+// For an intercepted request
+pub fn fulfillTransfer(self: *Client, transfer: *Transfer, status: u16, headers: []const Http.Header, body: ?[]const u8) !void {
+    if (builtin.mode == .Debug) {
+        std.debug.assert(transfer._intercepted);
+    }
+    self.intercepted -= 1;
+    return transfer.fulfill(status, headers, body);
 }
 
 // See ScriptManager.blockingGet
@@ -303,10 +345,8 @@ fn makeRequest(self: *Client, handle: *Handle, transfer: *Transfer) !void {
         try conn.setMethod(req.method);
         if (req.body) |b| {
             try conn.setBody(b);
-        } else if (req.method == .POST) {
-            // libcurl will crash if the method is POST but there's no body
-            // TODO: is there a setting for that..seems weird.
-            try conn.setBody("");
+        } else {
+            try errorCheck(c.curl_easy_setopt(easy, c.CURLOPT_HTTPGET, @as(c_long, 1)));
         }
 
         var header_list = req.headers;
@@ -342,15 +382,25 @@ fn makeRequest(self: *Client, handle: *Handle, transfer: *Transfer) !void {
     }
 
     self.active += 1;
-    _ = try self.perform(0, null);
+    _ = try self.perform(0);
 }
 
-fn perform(self: *Client, timeout_ms: c_int, socket: ?posix.socket_t) !bool {
+pub const PerformStatus = enum {
+    extra_socket,
+    normal,
+};
+
+fn perform(self: *Client, timeout_ms: c_int) !PerformStatus {
     const multi = self.multi;
     var running: c_int = undefined;
     try errorMCheck(c.curl_multi_perform(multi, &running));
 
-    if (socket) |s| {
+    // We're potentially going to block for a while until we get data. Process
+    // whatever messages we have waiting ahead of time.
+    try self.processMessages();
+
+    var status = PerformStatus.normal;
+    if (self.extra_socket) |s| {
         var wait_fd = c.curl_waitfd{
             .fd = s,
             .events = c.CURL_WAIT_POLLIN,
@@ -359,12 +409,18 @@ fn perform(self: *Client, timeout_ms: c_int, socket: ?posix.socket_t) !bool {
         try errorMCheck(c.curl_multi_poll(multi, &wait_fd, 1, timeout_ms, null));
         if (wait_fd.revents != 0) {
             // the extra socket we passed in is ready, let's signal our caller
-            return true;
+            status = .extra_socket;
         }
-    } else if (running > 0 and timeout_ms > 0) {
+    } else if (running > 0) {
         try errorMCheck(c.curl_multi_poll(multi, null, 0, timeout_ms, null));
     }
 
+    try self.processMessages();
+    return status;
+}
+
+fn processMessages(self: *Client) !void {
+    const multi = self.multi;
     var messages_count: c_int = 0;
     while (c.curl_multi_info_read(multi, &messages_count)) |msg_| {
         const msg: *c.CURLMsg = @ptrCast(msg_);
@@ -422,8 +478,6 @@ fn perform(self: *Client, timeout_ms: c_int, socket: ?posix.socket_t) !bool {
             self.requestFailed(transfer, err);
         }
     }
-
-    return false;
 }
 
 fn endTransfer(self: *Client, transfer: *Transfer) void {
@@ -508,7 +562,7 @@ const Handles = struct {
 };
 
 // wraps a c.CURL (an easy handle)
-const Handle = struct {
+pub const Handle = struct {
     client: *Client,
     conn: Http.Connection,
     node: Handles.HandleList.Node,
@@ -659,6 +713,7 @@ pub const Transfer = struct {
 
     // for when a Transfer is queued in the client.queue
     _node: std.DoublyLinkedList.Node = .{},
+    _intercepted: if (builtin.mode == .Debug) bool else void = if (builtin.mode == .Debug) false else {},
 
     pub fn reset(self: *Transfer) void {
         self._redirecting = false;
@@ -788,6 +843,7 @@ pub const Transfer = struct {
 
         const url = try urlStitch(arena, hlocation.?.value, std.mem.span(baseurl), .{});
         const uri = try std.Uri.parse(url);
+        transfer.uri = uri;
 
         var cookies: std.ArrayListUnmanaged(u8) = .{};
         try req.cookie_jar.forRequest(&uri, cookies.writer(arena), .{
@@ -1039,6 +1095,35 @@ pub const Transfer = struct {
         }
 
         try req.done_callback(req.ctx);
+    }
+
+    // This function should be called during the dataCallback. Calling it after
+    // such as in the doneCallback is guaranteed to return null.
+    pub fn getContentLength(self: *const Transfer) ?u32 {
+        const cl = self.getContentLengthRawValue() orelse return null;
+        return std.fmt.parseInt(u32, cl, 10) catch null;
+    }
+
+    fn getContentLengthRawValue(self: *const Transfer) ?[]const u8 {
+        if (self._handle) |handle| {
+            // If we have a handle, than this is a normal request. We can get the
+            // header value from the easy handle.
+            const cl = getResponseHeader(handle.conn.easy, "content-length", 0) orelse return null;
+            return cl.value;
+        }
+
+        // If we have no handle, then maybe this is being called after the
+        // doneCallback. OR, maybe this is a "fulfilled" request. Let's check
+        // the injected headers (if we have any).
+
+        const rh = self.response_header orelse return null;
+        for (rh._injected_headers) |hdr| {
+            if (std.ascii.eqlIgnoreCase(hdr.name, "content-length")) {
+                return hdr.value;
+            }
+        }
+
+        return null;
     }
 };
 
