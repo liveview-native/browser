@@ -77,18 +77,13 @@ pub fn CDPT(comptime TypeProvider: type) type {
         const Self = @This();
 
         pub fn init(app: *App, client: TypeProvider.Client) !Self {
+            const allocator = app.allocator;
             const browser = try Browser.init(app);
             errdefer browser.deinit();
 
-            init_with_browser(app, browser, client);
-        }
-
-        pub fn init_with_browser(app: *App, browser: *Browser, client: TypeProvider.Client) !Self {
-            const allocator = app.allocator;
-
             return .{
                 .client = client,
-                .browser = browser.*,
+                .browser = browser,
                 .allocator = allocator,
                 .browser_context = null,
                 .message_arena = std.heap.ArenaAllocator.init(allocator),
@@ -260,20 +255,6 @@ pub fn CDPT(comptime TypeProvider: type) type {
             try BrowserContext(Self).init(browser_context, id, self);
             return id;
         }
-
-        pub fn createBrowserContextWithSession(self: *Self, session: *Session) ![]const u8 {
-            if (self.browser_context != null) {
-                return error.AlreadyExists;
-            }
-            const id = self.browser_context_id_gen.next();
-
-            self.browser_context = @as(BrowserContext(Self), undefined);
-            const browser_context = &self.browser_context.?;
-
-            try BrowserContext(Self).init_with_session(browser_context, session, id, self);
-            return id;
-        }
-
         pub fn disposeBrowserContext(self: *Self, browser_context_id: []const u8) bool {
             const bc = &(self.browser_context orelse return false);
             if (std.mem.eql(u8, bc.id, browser_context_id) == false) {
@@ -370,13 +351,8 @@ pub fn BrowserContext(comptime CDP_T: type) type {
         const Self = @This();
 
         fn init(self: *Self, id: []const u8, cdp: *CDP_T) !void {
-            const session = try cdp.browser.newSession();
-            try self.init_with_session(session, id, cdp);
-        }
-
-        pub fn init_with_session(self: *Self, session: *Session, id: []const u8, cdp: *CDP_T) !void {
-            std.debug.print("init_with_session", .{});
             const allocator = cdp.allocator;
+            const session = try cdp.browser.newSession();
 
             const arena = session.arena;
 
