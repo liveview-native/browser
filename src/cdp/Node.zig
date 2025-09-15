@@ -327,6 +327,9 @@ pub const Writer = struct {
 
 const testing = @import("testing.zig");
 test "cdp Node: Registry register" {
+    try parser.init();
+    defer parser.deinit();
+
     var registry = Registry.init(testing.allocator);
     defer registry.deinit();
 
@@ -362,6 +365,9 @@ test "cdp Node: Registry register" {
 }
 
 test "cdp Node: search list" {
+    try parser.init();
+    defer parser.deinit();
+
     var registry = Registry.init(testing.allocator);
     defer registry.deinit();
 
@@ -413,6 +419,9 @@ test "cdp Node: search list" {
 }
 
 test "cdp Node: Writer" {
+    try parser.init();
+    defer parser.deinit();
+
     var registry = Registry.init(testing.allocator);
     defer registry.deinit();
 

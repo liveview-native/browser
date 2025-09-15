@@ -42,32 +42,35 @@ const MAX_MESSAGE_SIZE = 512 * 1024 + 14 + 140;
 
 pub const Server = struct {
     app: *App,
-    browser: *Browser,
+    shutdown: bool,
     allocator: Allocator,
     client: ?posix.socket_t,
     listener: ?posix.socket_t,
     json_version_response: []const u8,
 
-    pub fn init(app: *App, browser: *Browser, address: net.Address) !Server {
+    pub fn init(app: *App, address: net.Address) !Server {
         const allocator = app.allocator;
         const json_version_response = try buildJSONVersionResponse(allocator, address);
         errdefer allocator.free(json_version_response);
 
         return .{
             .app = app,
-            .browser = browser,
             .client = null,
             .listener = null,
+            .shutdown = false,
             .allocator = allocator,
             .json_version_response = json_version_response,
         };
     }
 
     pub fn deinit(self: *Server) void {
-        self.allocator.free(self.json_version_response);
+        self.shutdown = true;
         if (self.listener) |listener| {
             posix.close(listener);
         }
+        // *if* server.run is running, we should really wait for it to return
+        // before existing from here.
+        self.allocator.free(self.json_version_response);
     }
 
     pub fn run(self: *Server, address: net.Address, timeout_ms: i32) !void {
@@ -87,6 +90,9 @@ pub const Server = struct {
         log.info(.app, "server running", .{ .address = address });
         while (true) {
             const socket = posix.accept(listener, null, null, posix.SOCK.NONBLOCK) catch |err| {
+                if (self.shutdown) {
+                    return;
+                }
                 log.err(.app, "CDP accept", .{ .err = err });
                 std.Thread.sleep(std.time.ns_per_s);
                 continue;
@@ -121,67 +127,57 @@ pub const Server = struct {
         client.* = try Client.init(socket, self);
         defer client.deinit();
 
-        var last_message = timestamp();
         var http = &self.app.http;
+        http.monitorSocket(socket);
+        defer http.unmonitorSocket();
+
+        std.debug.assert(client.mode == .http);
         while (true) {
-            if (http.poll(20, socket)) {
-                const n = posix.read(socket, client.readBuf()) catch |err| {
-                    log.warn(.app, "CDP read", .{ .err = err });
-                    return;
-                };
-                if (n == 0) {
-                    log.info(.app, "CDP disconnect", .{});
-                    return;
-                }
-                const more = client.processData(n) catch false;
-                if (!more) {
-                    return;
-                }
-                last_message = timestamp();
-            } else if (timestamp() - last_message > timeout_ms) {
+            if (http.poll(timeout_ms) != .extra_socket) {
                 log.info(.app, "CDP timeout", .{});
                 return;
             }
-            // We have 3 types of "events":
-            // - Incoming CDP messages
-            // - Network events from the browser
-            // - Timeouts from the browser
 
-            // The call to http.poll above handles the first two (which is why
-            // we pass the client socket to it). But browser timeouts aren't
-            // hooked into that. So we need to go to the browser page (if there
-            // is one), and ask it to process any pending events. That action
-            // doesn't starve #2 (Network events from the browser), because
-            // page.wait() handles that too. But it does starve #1 (Incoming CDP
-            // messages). The good news is that, while the Page is mostly
-            // unaware of CDP, it will only block if it actually has something to
-            // do AND it knows if we're waiting on an intercept request, and will
-            // eagerly return control here in those cases.
+            if (try client.readSocket() == false) {
+                return;
+            }
+
             if (client.mode == .cdp) {
-                if (client.mode.cdp.browser_context == null) {
-                    _ = try client.mode.cdp.createBrowserContextWithSession(&client.mode.cdp.browser.session.?);
-                    std.debug.print("made context with session", .{});
-                    // createBrowserContext()
-                    // const id = client.mode.cdp.browser_context_id_gen.next();
+                break; // switch to our CDP loop
+            }
+        }
 
-                    // client.mode.cdp.browser_context = @as(BrowserContext(CDP), undefined);
-                    // const browser_context = &client.mode.cdp.browser_context.?;
-
-                    // try BrowserContext(CDP).init_with_session(browser_context, &client.mode.cdp.browser.session.?, id, &client.mode.cdp);
-
-                    // client.mode.cdp.browser_context.?.session.page = client.mode.cdp.browser.session.?.page;
-
-                    // _ = try client.mode.cdp.browser_context.?.session.createPage();
-                    // const page = client.mode.cdp.browser.session.?.page;
-                    const target_id = client.mode.cdp.target_id_gen.next();
-                    client.mode.cdp.browser_context.?.target_id = target_id;
-                    const session_id = client.mode.cdp.session_id_gen.next();
-                    client.mode.cdp.browser_context.?.extra_headers.clearRetainingCapacity();
-                    client.mode.cdp.browser_context.?.session_id = session_id;
-                    std.debug.print("setup ids", .{});
-                }
-
-                client.mode.cdp.pageWait();
+        var cdp = &client.mode.cdp;
+        var last_message = timestamp();
+        var ms_remaining = timeout_ms;
+        while (true) {
+            switch (cdp.pageWait(ms_remaining)) {
+                .extra_socket => {
+                    if (try client.readSocket() == false) {
+                        return;
+                    }
+                    last_message = timestamp();
+                    ms_remaining = timeout_ms;
+                },
+                .no_page => {
+                    if (http.poll(ms_remaining) != .extra_socket) {
+                        log.info(.app, "CDP timeout", .{});
+                        return;
+                    }
+                    if (try client.readSocket() == false) {
+                        return;
+                    }
+                    last_message = timestamp();
+                    ms_remaining = timeout_ms;
+                },
+                .done => {
+                    const elapsed = timestamp() - last_message;
+                    if (elapsed > ms_remaining) {
+                        log.info(.app, "CDP timeout", .{});
+                        return;
+                    }
+                    ms_remaining -= @as(i32, @intCast(elapsed));
+                },
             }
         }
     }
@@ -236,6 +232,20 @@ pub const Client = struct {
         }
         self.reader.deinit();
         self.send_arena.deinit();
+    }
+
+    fn readSocket(self: *Client) !bool {
+        const n = posix.read(self.socket, self.readBuf()) catch |err| {
+            log.warn(.app, "CDP read", .{ .err = err });
+            return false;
+        };
+
+        if (n == 0) {
+            log.info(.app, "CDP disconnect", .{});
+            return false;
+        }
+
+        return self.processData(n) catch false;
     }
 
     fn readBuf(self: *Client) []u8 {
@@ -474,16 +484,7 @@ pub const Client = struct {
             break :blk res;
         };
 
-        const cdp = try CDP.init_with_browser(self.server.app, self.server.browser, self);
-
-        // const id = try cdp.createBrowserContext();
-        // std.debug.print("{s}", .{id});
-
-        // const page = try cdp.browser_context.?.session.createPage();
-        // const url = try std.fmt.allocPrint(page.arena, "http://localhost:8000", .{});
-        // try page.navigate(url, .{});
-
-        self.mode = .{ .cdp = cdp };
+        self.mode = .{ .cdp = try CDP.init(self.server.app, self) };
         return self.send(response);
     }
 
@@ -993,8 +994,7 @@ fn buildJSONVersionResponse(
 }
 
 fn timestamp() u32 {
-    const ts = std.posix.clock_gettime(std.posix.CLOCK.MONOTONIC) catch unreachable;
-    return @intCast(ts.sec);
+    return @import("datetime.zig").timestamp();
 }
 
 // In-place string lowercase

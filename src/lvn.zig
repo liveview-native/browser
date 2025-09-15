@@ -19,7 +19,7 @@ export fn lvn_devtools_run(lvn: ?*anyopaque, addr: std.posix.sockaddr.in) void {
     // const address = std.net.Address{ .in = .{ .sa = addr } };
 
     // _server is global to handle graceful shutdown.
-    var server = Server.init(browser.app, browser, address) catch |err| {
+    var server = Server.init(browser.app, address) catch |err| {
         std.debug.print("server failed to init: {}\n", .{err});
         @panic("server failed to init");
     };
@@ -61,7 +61,7 @@ export fn lvn_init(input_url: [*:0]u8) ?*anyopaque {
         },
     };
 
-    session.wait(5);
+    _ = session.wait(5);
 
     return browser;
 }
@@ -85,7 +85,7 @@ fn dumpPage(page: *Page, _: void) void {
 export fn lvn_dispatch_eventloop(lvn: ?*anyopaque) void {
     const browser: *Browser = @ptrCast(@alignCast(lvn.?));
     // eagerly jump through the javascript event loop, clearing events on the stack.
-    browser.session.?.page.?.wait(0);
+    _ = browser.session.?.page.?.wait(0);
 }
 
 export fn lvn_deinit(lvn: ?*anyopaque) void {

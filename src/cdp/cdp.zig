@@ -108,7 +108,6 @@ pub fn CDPT(comptime TypeProvider: type) type {
         pub fn handleMessage(self: *Self, msg: []const u8) bool {
             // if there's an error, it's already been logged
             self.processMessage(msg) catch return false;
-            self.pageWait();
             return true;
         }
 
@@ -122,11 +121,11 @@ pub fn CDPT(comptime TypeProvider: type) type {
         // A bit hacky right now. The main server loop doesn't unblock for
         // scheduled task. So we run this directly in order to process any
         // timeouts (or http events) which are ready to be processed.
-        pub fn pageWait(self: *Self) void {
-            const session = &(self.browser.session orelse return);
-            // exits early if there's nothing to do, so a large value like
-            // 5 seconds should be ok
-            session.wait(5);
+
+        pub fn hasPage() bool {}
+        pub fn pageWait(self: *Self, ms: i32) Session.WaitResult {
+            const session = &(self.browser.session orelse return .no_page);
+            return session.wait(ms);
         }
 
         // Called from above, in processMessage which handles client messages
@@ -509,6 +508,18 @@ pub fn BrowserContext(comptime CDP_T: type) type {
             self.cdp.browser.notification.unregister(.http_request_auth_required, self);
         }
 
+        pub fn lifecycleEventsEnable(self: *Self) !void {
+            self.page_life_cycle_events = true;
+            try self.cdp.browser.notification.register(.page_network_idle, self, onPageNetworkIdle);
+            try self.cdp.browser.notification.register(.page_network_almost_idle, self, onPageNetworkAlmostIdle);
+        }
+
+        pub fn lifecycleEventsDisable(self: *Self) void {
+            self.page_life_cycle_events = false;
+            self.cdp.browser.notification.unregister(.page_network_idle, self);
+            self.cdp.browser.notification.unregister(.page_network_almost_idle, self);
+        }
+
         pub fn onPageRemove(ctx: *anyopaque, _: Notification.PageRemove) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
             try @import("domains/page.zig").pageRemove(self);
@@ -528,6 +539,16 @@ pub fn BrowserContext(comptime CDP_T: type) type {
         pub fn onPageNavigated(ctx: *anyopaque, msg: *const Notification.PageNavigated) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
             return @import("domains/page.zig").pageNavigated(self, msg);
+        }
+
+        pub fn onPageNetworkIdle(ctx: *anyopaque, msg: *const Notification.PageNetworkIdle) !void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            return @import("domains/page.zig").pageNetworkIdle(self, msg);
+        }
+
+        pub fn onPageNetworkAlmostIdle(ctx: *anyopaque, msg: *const Notification.PageNetworkAlmostIdle) !void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            return @import("domains/page.zig").pageNetworkAlmostIdle(self, msg);
         }
 
         pub fn onHttpRequestStart(ctx: *anyopaque, msg: *const Notification.RequestStart) !void {

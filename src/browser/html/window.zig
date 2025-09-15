@@ -76,7 +76,7 @@ pub const Window = struct {
             .document = html_doc,
             .target = target orelse "",
             .navigator = navigator orelse .{},
-            .performance = .{ .time_origin = try std.time.Timer.start() },
+            .performance = Performance.init(),
         };
     }
 
@@ -86,7 +86,7 @@ pub const Window = struct {
     }
 
     pub fn replaceDocument(self: *Window, doc: *parser.DocumentHTML) !void {
-        self.performance.time_origin.reset(); // When to reset see: https://developer.mozilla.org/en-US/docs/Web/API/Performance/timeOrigin
+        self.performance.reset(); // When to reset see: https://developer.mozilla.org/en-US/docs/Web/API/Performance/timeOrigin
         self.document = doc;
         try parser.documentHTMLSetLocation(Location, doc, &self.location);
     }
@@ -215,7 +215,11 @@ pub const Window = struct {
     }
 
     pub fn _requestAnimationFrame(self: *Window, cbk: Function, page: *Page) !u32 {
-        return self.createTimeout(cbk, 5, page, .{ .animation_frame = true, .name = "animationFrame" });
+        return self.createTimeout(cbk, 5, page, .{
+            .animation_frame = true,
+            .name = "animationFrame",
+            .low_priority = true,
+        });
     }
 
     pub fn _cancelAnimationFrame(self: *Window, id: u32) !void {
@@ -269,17 +273,10 @@ pub const Window = struct {
         args: []Env.JsObject = &.{},
         repeat: bool = false,
         animation_frame: bool = false,
+        low_priority: bool = false,
     };
     fn createTimeout(self: *Window, cbk: Function, delay_: ?u32, page: *Page, opts: CreateTimeoutOpts) !u32 {
         const delay = delay_ orelse 0;
-        if (delay > 5000) {
-            log.warn(.user_script, "long timeout ignored", .{ .delay = delay, .interval = opts.repeat });
-            // self.timer_id is u30, so the largest value we can generate is
-            // 1_073_741_824. Returning 2_000_000_000 makes sure that clients
-            // can call cancelTimer/cancelInterval without breaking anything.
-            return 2_000_000_000;
-        }
-
         if (self.timers.count() > 512) {
             return error.TooManyTimeout;
         }
@@ -317,7 +314,10 @@ pub const Window = struct {
             .repeat = if (opts.repeat) delay + 1 else null,
         };
 
-        try page.scheduler.add(callback, TimerCallback.run, delay, .{ .name = opts.name });
+        try page.scheduler.add(callback, TimerCallback.run, delay, .{
+            .name = opts.name,
+            .low_priority = opts.low_priority,
+        });
 
         return timer_id;
     }
@@ -436,150 +436,7 @@ const TimerCallback = struct {
 };
 
 const testing = @import("../../testing.zig");
-test "Browser.HTML.Window" {
-    var runner = try testing.jsRunner(testing.tracking_allocator, .{});
-    defer runner.deinit();
-
-    // try runner.testCases(&.{
-    //     .{ "window.parent === window", "true" },
-    //     .{ "window.top === window", "true" },
-    // }, .{});
-
-    try runner.testCases(&.{
-        .{
-            \\ let start = 0;
-            \\ function step(timestamp) {
-            \\    start = timestamp;
-            \\ }
-            ,
-            null,
-        },
-        .{ "requestAnimationFrame(step);", null }, // returned id is checked in the next test
-        .{ " start > 0", "true" },
-    }, .{});
-
-    // cancelAnimationFrame should be able to cancel a request with the given id
-    try runner.testCases(&.{
-        .{ "let request_id = requestAnimationFrame(timestamp => {});", null },
-        .{ "cancelAnimationFrame(request_id);", "undefined" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "innerHeight", "1" },
-        .{ "innerWidth", "1" }, // Width is 1 even if there are no elements
-        .{
-            \\ let div1 = document.createElement('div');
-            \\ document.body.appendChild(div1);
-            \\ div1.getClientRects();
-            ,
-            null,
-        },
-        .{
-            \\ let div2 = document.createElement('div');
-            \\ document.body.appendChild(div2);
-            \\ div2.getClientRects();
-            ,
-            null,
-        },
-        .{ "innerHeight", "1" },
-        .{ "innerWidth", "2" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "let longCall = false;", null },
-        .{ "window.setTimeout(() => {longCall = true}, 5001);", null },
-        .{ "longCall;", "false" },
-
-        .{ "let wst = 0;", null },
-        .{ "window.setTimeout(() => {wst += 1}, 1)", null },
-        .{ "wst", "1" },
-
-        .{ "window.setTimeout((a, b) => {wst = a + b}, 1, 2, 3)", null },
-        .{ "wst", "5" },
-    }, .{});
-
-    // window event target
-    try runner.testCases(&.{
-        .{
-            \\ let called = false;
-            \\ window.addEventListener("ready", (e) => {
-            \\   called = (e.currentTarget == window);
-            \\ }, {capture: false, once: false});
-            \\ const evt = new Event("ready", { bubbles: true, cancelable: false });
-            \\ window.dispatchEvent(evt);
-            \\ called;
-            ,
-            "true",
-        },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "const b64 = btoa('https://ziglang.org/documentation/master/std/#std.base64.Base64Decoder')", "undefined" },
-        .{ "b64", "aHR0cHM6Ly96aWdsYW5nLm9yZy9kb2N1bWVudGF0aW9uL21hc3Rlci9zdGQvI3N0ZC5iYXNlNjQuQmFzZTY0RGVjb2Rlcg==" },
-        .{ "const str = atob(b64)", "undefined" },
-        .{ "str", "https://ziglang.org/documentation/master/std/#std.base64.Base64Decoder" },
-        .{ "try { atob('b') } catch (e) { e } ", "Error: InvalidCharacterError" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "let scroll = false; let scrolend = false", null },
-        .{ "window.addEventListener('scroll', () => {scroll = true});", null },
-        .{ "document.addEventListener('scrollend', () => {scrollend = true});", null },
-        .{ "window.scrollTo(0)", null },
-        .{ "scroll", "true" },
-        .{ "scrollend", "true" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "window == window.self", "true" },
-        .{ "window == window.parent", "true" },
-        .{ "window == window.top", "true" },
-        .{ "window == window.frames", "true" },
-        .{ "window.frames.length", "0" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "var qm = false; window.queueMicrotask(() => {qm = true });", null },
-        .{ "qm", "true" },
-    }, .{});
-
-    {
-        try runner.testCases(&.{
-            .{
-                \\ let dcl = false;
-                \\ window.addEventListener('DOMContentLoaded', (e) => {
-                \\   dcl = e.target == document;
-                \\ });
-                ,
-                null,
-            },
-        }, .{});
-        try runner.dispatchDOMContentLoaded();
-        try runner.testCases(&.{
-            .{ "dcl", "true" },
-        }, .{});
-    }
-}
-
-test "Browser.HTML.Window.frames" {
-    var runner = try testing.jsRunner(testing.tracking_allocator, .{ .html = 
-        \\<body>
-        \\ <iframe
-        \\   src="https://httpbin.io/html"
-        \\   title="iframea">
-        \\ </iframe>
-        \\ <iframe
-        \\   src="https://httpbin.io/html"
-        \\   title="iframeb">
-        \\ </iframe>
-        \\</body>
-    });
-
-    defer runner.deinit();
-
-    try runner.testCases(&.{
-        .{ "frames.length", "2" },
-        .{ "try { frames[1] } catch (e) { e }", "Error: TODO" }, // TODO fixme
-        .{ "frames[3]", "undefined" },
-    }, .{});
+test "Browser: Window" {
+    try testing.htmlRunner("window/window.html");
+    try testing.htmlRunner("window/frames.html");
 }

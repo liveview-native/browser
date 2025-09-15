@@ -321,14 +321,14 @@ fn writeString(comptime format: Format, value: []const u8, writer: anytype) !voi
     return writer.writeByte('"');
 }
 
-fn timestamp() i64 {
+fn timestamp() u64 {
     if (comptime @import("builtin").is_test) {
         return 1739795092929;
     }
-    return std.time.milliTimestamp();
+    return @import("datetime.zig").milliTimestamp();
 }
 
-var first_log: i64 = 0;
+var first_log: u64 = 0;
 fn elapsed() struct { time: f64, unit: []const u8 } {
     const now = timestamp();
 
@@ -348,6 +348,9 @@ fn elapsed() struct { time: f64, unit: []const u8 } {
 
 const testing = @import("testing.zig");
 test "log: data" {
+    opts.format = .logfmt;
+    defer opts.format = .pretty;
+
     var aw = std.Io.Writer.Allocating.init(testing.allocator);
     defer aw.deinit();
 
@@ -384,6 +387,9 @@ test "log: data" {
 }
 
 test "log: string escape" {
+    opts.format = .logfmt;
+    defer opts.format = .pretty;
+
     var aw = std.Io.Writer.Allocating.init(testing.allocator);
     defer aw.deinit();
 

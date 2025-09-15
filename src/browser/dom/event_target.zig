@@ -31,6 +31,10 @@ pub const Union = union(enum) {
     xhr: *@import("../xhr/xhr.zig").XMLHttpRequest,
     plain: *parser.EventTarget,
     message_port: *@import("MessageChannel.zig").MessagePort,
+    screen: *@import("../html/screen.zig").Screen,
+    screen_orientation: *@import("../html/screen.zig").ScreenOrientation,
+    performance: *@import("performance.zig").Performance,
+    media_query_list: *@import("../html/media_query_list.zig").MediaQueryList,
 };
 
 // EventTarget implementation
@@ -67,7 +71,18 @@ pub const EventTarget = struct {
             .message_port => {
                 return .{ .message_port = @fieldParentPtr("proto", @as(*parser.EventTargetTBase, @ptrCast(et))) };
             },
-            else => return error.MissingEventTargetType,
+            .screen => {
+                return .{ .screen = @fieldParentPtr("proto", @as(*parser.EventTargetTBase, @ptrCast(et))) };
+            },
+            .screen_orientation => {
+                return .{ .screen_orientation = @fieldParentPtr("proto", @as(*parser.EventTargetTBase, @ptrCast(et))) };
+            },
+            .performance => {
+                return .{ .performance = @fieldParentPtr("base", @as(*parser.EventTargetTBase, @ptrCast(et))) };
+            },
+            .media_query_list => {
+                return .{ .media_query_list = @fieldParentPtr("base", @as(*parser.EventTargetTBase, @ptrCast(et))) };
+            },
         }
     }
 
@@ -139,134 +154,6 @@ pub const EventTarget = struct {
 };
 
 const testing = @import("../../testing.zig");
-test "Browser.DOM.EventTarget" {
-    var runner = try testing.jsRunner(testing.tracking_allocator, .{});
-    defer runner.deinit();
-
-    try runner.testCases(&.{
-        .{ "new EventTarget()", "[object EventTarget]" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "let content = document.getElementById('content')", "undefined" },
-        .{ "let para = document.getElementById('para')", "undefined" },
-        // NOTE: as some event properties will change during the event dispatching phases
-        // we need to copy thoses values in order to check them afterwards
-        .{
-            \\ var nb = 0; var evt; var phase; var cur;
-            \\ function cbk(event) {
-            \\   evt = event;
-            \\   phase = event.eventPhase;
-            \\   cur = event.currentTarget;
-            \\   nb ++;
-            \\ }
-            ,
-            "undefined",
-        },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "content.addEventListener('basic', cbk)", "undefined" },
-        .{ "content.dispatchEvent(new Event('basic'))", "true" },
-        .{ "nb", "1" },
-        .{ "evt instanceof Event", "true" },
-        .{ "evt.type", "basic" },
-        .{ "phase", "2" },
-        .{ "cur.getAttribute('id')", "content" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "nb = 0; evt = undefined; phase = undefined; cur = undefined", "undefined" },
-        .{ "para.dispatchEvent(new Event('basic'))", "true" },
-        .{ "nb", "0" }, // handler is not called, no capture, not the target, no bubbling
-        .{ "evt === undefined", "true" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "nb  = 0", "0" },
-        .{ "content.addEventListener('basic', cbk)", "undefined" },
-        .{ "content.dispatchEvent(new Event('basic'))", "true" },
-        .{ "nb", "1" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "nb  = 0", "0" },
-        .{ "content.addEventListener('basic', cbk, true)", "undefined" },
-        .{ "content.dispatchEvent(new Event('basic'))", "true" },
-        .{ "nb", "2" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "nb  = 0", "0" },
-        .{ "content.removeEventListener('basic', cbk)", "undefined" },
-        .{ "content.dispatchEvent(new Event('basic'))", "true" },
-        .{ "nb", "1" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "nb  = 0", "0" },
-        .{ "content.removeEventListener('basic', cbk, {capture: true})", "undefined" },
-        .{ "content.dispatchEvent(new Event('basic'))", "true" },
-        .{ "nb", "0" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "nb = 0; evt = undefined; phase = undefined; cur = undefined", "undefined" },
-        .{ "content.addEventListener('capture', cbk, true)", "undefined" },
-        .{ "content.dispatchEvent(new Event('capture'))", "true" },
-        .{ "nb", "1" },
-        .{ "evt instanceof Event", "true" },
-        .{ "evt.type", "capture" },
-        .{ "phase", "2" },
-        .{ "cur.getAttribute('id')", "content" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "nb = 0; evt = undefined; phase = undefined; cur = undefined", "undefined" },
-        .{ "para.dispatchEvent(new Event('capture'))", "true" },
-        .{ "nb", "1" },
-        .{ "evt instanceof Event", "true" },
-        .{ "evt.type", "capture" },
-        .{ "phase", "1" },
-        .{ "cur.getAttribute('id')", "content" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "nb = 0; evt = undefined; phase = undefined; cur = undefined", "undefined" },
-        .{ "content.addEventListener('bubbles', cbk)", "undefined" },
-        .{ "content.dispatchEvent(new Event('bubbles', {bubbles: true}))", "true" },
-        .{ "nb", "1" },
-        .{ "evt instanceof Event", "true" },
-        .{ "evt.type", "bubbles" },
-        .{ "evt.bubbles", "true" },
-        .{ "phase", "2" },
-        .{ "cur.getAttribute('id')", "content" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "nb = 0; evt = undefined; phase = undefined; cur = undefined", "undefined" },
-        .{ "para.dispatchEvent(new Event('bubbles', {bubbles: true}))", "true" },
-        .{ "nb", "1" },
-        .{ "evt instanceof Event", "true" },
-        .{ "evt.type", "bubbles" },
-        .{ "phase", "3" },
-        .{ "cur.getAttribute('id')", "content" },
-    }, .{});
-
-    try runner.testCases(&.{
-        .{ "const obj1 = {calls: 0, handleEvent: function() { this.calls += 1; } };", null },
-        .{ "content.addEventListener('he', obj1);", null },
-        .{ "content.dispatchEvent(new Event('he'));", null },
-        .{ "obj1.calls", "1" },
-
-        .{ "content.removeEventListener('he', obj1);", null },
-        .{ "content.dispatchEvent(new Event('he'));", null },
-        .{ "obj1.calls", "1" },
-    }, .{});
-
-    // doesn't crash on null receiver
-    try runner.testCases(&.{
-        .{ "content.addEventListener('he2', null);", null },
-        .{ "content.dispatchEvent(new Event('he2'));", null },
-    }, .{});
+test "Browser: DOM.EventTarget" {
+    try testing.htmlRunner("dom/event_target.html");
 }

@@ -90,15 +90,8 @@ pub const Page = struct {
 
     load_state: LoadState = .parsing,
 
-    // Page.wait balances waiting for resources / tasks and producing an output.
-    // Up until a timeout, Page.wait will always wait for inflight or pending
-    // HTTP requests, via the Http.Client.active counter. However, intercepted
-    // requests (via CDP, but it could be anything), aren't considered "active"
-    // connection. So it's possible that we have intercepted requests (which are
-    // pending on some driver to continue/abort) while Http.Client.active == 0.
-    // This boolean exists to supplment Http.Client.active and inform Page.wait
-    // of pending connections.
-    request_intercepted: bool = false,
+    notified_network_idle: IdleNotification = .init,
+    notified_network_almost_idle: IdleNotification = .init,
 
     const Mode = union(enum) {
         pre: void,
@@ -262,23 +255,26 @@ pub const Page = struct {
         return self.script_manager.blockingGet(src);
     }
 
-    pub fn wait(self: *Page, wait_sec: u16) void {
-        self._wait(wait_sec) catch |err| switch (err) {
-            error.JsError => {}, // already logged (with hopefully more context)
-            else => {
-                // There may be errors from the http/client or ScriptManager
-                // that we should not treat as an error like this. Will need
-                // to run this through more real-world sites and see if we need
-                // to expand the switch (err) to have more customized logs for
-                // specific messages.
-                log.err(.browser, "page wait", .{ .err = err });
-            },
+    pub fn wait(self: *Page, wait_ms: i32) Session.WaitResult {
+        return self._wait(wait_ms) catch |err| {
+            switch (err) {
+                error.JsError => {}, // already logged (with hopefully more context)
+                else => {
+                    // There may be errors from the http/client or ScriptManager
+                    // that we should not treat as an error like this. Will need
+                    // to run this through more real-world sites and see if we need
+                    // to expand the switch (err) to have more customized logs for
+                    // specific messages.
+                    log.err(.browser, "page wait", .{ .err = err });
+                },
+            }
+            return .done;
         };
     }
 
-    fn _wait(self: *Page, wait_sec: u16) !void {
+    fn _wait(self: *Page, wait_ms: i32) !Session.WaitResult {
         var timer = try std.time.Timer.start();
-        var ms_remaining: i32 = @intCast(wait_sec * 1000);
+        var ms_remaining = wait_ms;
 
         var try_catch: Env.TryCatch = undefined;
         try_catch.init(self.main_context);
@@ -287,42 +283,47 @@ pub const Page = struct {
         var scheduler = &self.scheduler;
         var http_client = self.http_client;
 
+        // I'd like the page to know NOTHING about extra_socket / CDP, but the
+        // fact is that the behavior of wait changes depending on whether or
+        // not we're using CDP.
+        // If we aren't using CDP, as soon as we think there's nothing left
+        // to do, we can exit - we'de done.
+        // But if we are using CDP, we should wait for the whole `wait_ms`
+        // because the http_click.tick() also monitors the CDP socket. And while
+        // we could let CDP poll http (like it does for HTTP requests), the fact
+        // is that we know more about the timing of stuff (e.g. how long to
+        // poll/sleep) in the page.
+        const exit_when_done = http_client.extra_socket == null;
+
         // for debugging
         // defer self.printWaitAnalysis();
 
         while (true) {
-            SW: switch (self.mode) {
+            switch (self.mode) {
                 .pre, .raw, .text => {
-                    if (self.request_intercepted) {
-                        // the page request was intercepted.
-
-                        // there shouldn't be any active requests;
-                        std.debug.assert(http_client.active == 0);
-
-                        // nothing we can do for this, need to kick the can up
-                        // the chain and wait for activity (e.g. a CDP message)
-                        // to unblock this.
-                        return;
-                    }
-
                     // The main page hasn't started/finished navigating.
                     // There's no JS to run, and no reason to run the scheduler.
-                    if (http_client.active == 0) {
+                    if (http_client.active == 0 and exit_when_done) {
                         // haven't started navigating, I guess.
-                        return;
+                        return .done;
                     }
 
-                    // There should only be 1 active http transfer, the main page
-                    _ = try http_client.tick(.{ .timeout_ms = ms_remaining });
+                    // Either we have active http connections, or we're in CDP
+                    // mode with an extra socket. Either way, we're waiting
+                    // for http traffic
+                    if (try http_client.tick(ms_remaining) == .extra_socket) {
+                        // data on a socket we aren't handling, return to caller
+                        return .extra_socket;
+                    }
                 },
                 .html, .parsed => {
                     // The HTML page was parsed. We now either have JS scripts to
-                    // download, or timeouts to execute, or both.
+                    // download, or scheduled tasks to execute, or both.
 
                     // scheduler.run could trigger new http transfers, so do not
                     // store http_client.active BEFORE this call and then use
                     // it AFTER.
-                    const ms_to_next_task = try scheduler.runHighPriority();
+                    const ms_to_next_task = try scheduler.run();
 
                     if (try_catch.hasCaught()) {
                         const msg = (try try_catch.err(self.arena)) orelse "unknown";
@@ -330,69 +331,81 @@ pub const Page = struct {
                         return error.JsError;
                     }
 
-                    if (http_client.active == 0) {
-                        if (ms_to_next_task) |ms| {
-                            // There are no HTTP transfers, so there's no point calling
-                            // http_client.tick.
-                            // TODO: should we just force-run the scheduler??
-
-                            if (ms > ms_remaining) {
-                                // we'd wait to long, might as well exit early.
-                                return;
-                            }
-                            _ = try scheduler.runLowPriority();
-
-                            // We must use a u64 here b/c ms is a u32 and the
-                            // conversion to ns can generate an integer
-                            // overflow.
-                            const _ms: u64 = @intCast(ms);
-
-                            std.Thread.sleep(std.time.ns_per_ms * _ms);
-                            break :SW;
-                        }
-
-                        // We have no active http transfer and no pending
-                        // schedule tasks. We're done
-                        return;
+                    const http_active = http_client.active;
+                    const total_network_activity = http_active + http_client.intercepted;
+                    if (self.notified_network_almost_idle.check(total_network_activity <= 2)) {
+                        self.notifyNetworkAlmostIdle();
+                    }
+                    if (self.notified_network_idle.check(total_network_activity == 0)) {
+                        self.notifyNetworkIdle();
                     }
 
-                    _ = try scheduler.runLowPriority();
+                    if (http_active == 0 and exit_when_done) {
+                        // we don't need to consider http_client.intercepted here
+                        // because exit_when_done is true, and that can only be
+                        // the case when interception isn't possible.
+                        std.debug.assert(http_client.intercepted == 0);
 
-                    const request_intercepted = self.request_intercepted;
+                        const ms = ms_to_next_task orelse blk: {
+                            // TODO: when jsRunner is fully replaced with the
+                            // htmlRunner, we can remove the first part of this
+                            // condition. jsRunner calls `page.wait` far too
+                            // often to enforce this.
+                            if (wait_ms > 100 and wait_ms - ms_remaining < 100) {
+                                // Look, we want to exit ASAP, but we don't want
+                                // to exit so fast that we've run none of the
+                                // background jobs.
+                                break :blk if (comptime builtin.is_test) 5 else 50;
+                            }
+                            // No http transfers, no cdp extra socket, no
+                            // scheduled tasks, we're done.
+                            return .done;
+                        };
 
-                    // We want to prioritize processing intercepted requests
-                    // because, the sooner they get unblocked, the sooner we
-                    // can start the HTTP request. But we still want to advanced
-                    // existing HTTP requests, if possible. So, if we have
-                    // intercepted requests, we'll still look at existing HTTP
-                    // requests, but we won't block waiting for more data.
-                    const ms_to_wait =
-                        if (request_intercepted) 0
+                        if (ms > ms_remaining) {
+                            // Same as above, except we have a scheduled task,
+                            // it just happens to be too far into the future
+                            // compared to how long we were told to wait.
+                            return .done;
+                        }
 
-                        // But if we have no intercepted requests, we'll wait
-                        // for as long as we can for data to our existing
-                        // inflight requests
-                        else @min(ms_remaining, ms_to_next_task orelse 1000);
-
-                    _ = try http_client.tick(.{ .timeout_ms = ms_to_wait });
-
-                    if (request_intercepted) {
-                        // Again, proritizing intercepted requests. Exit this
-                        // loop so that our caller can hopefully resolve them
-                        // (i.e. continue or abort them);
-                        return;
+                        // We have a task to run in the not-so-distant future.
+                        // You might think we can just sleep until that task is
+                        // ready, but we should continue to run lowPriority tasks
+                        // in the meantime, and that could unblock things. So
+                        // we'll just sleep for a bit, and then restart our wait
+                        // loop to see if anything new can be processed.
+                        std.Thread.sleep(std.time.ns_per_ms * @as(u64, @intCast(@min(ms, 20))));
+                    } else {
+                        // We're here because we either have active HTTP
+                        // connections, or exit_when_done == false (aka, there's
+                        // an extra_socket registered with the http client).
+                        // We should continue to run lowPriority tasks, so we
+                        // minimize how long we'll poll for network I/O.
+                        const ms_to_wait = @min(200, @min(ms_remaining, ms_to_next_task orelse 200));
+                        if (try http_client.tick(ms_to_wait) == .extra_socket) {
+                            // data on a socket we aren't handling, return to caller
+                            return .extra_socket;
+                        }
                     }
                 },
                 .err => |err| {
                     self.mode = .{ .raw_done = @errorName(err) };
                     return err;
                 },
-                .raw_done => return,
+                .raw_done => {
+                    if (exit_when_done) {
+                        return .done;
+                    }
+                    // we _could_ http_client.tick(ms_to_wait), but this has
+                    // the same result, and I feel is more correct.
+                    return .no_page;
+                },
             }
 
             const ms_elapsed = timer.lap() / 1_000_000;
             if (ms_elapsed >= ms_remaining) {
-                return;
+                return .done;
             }
             ms_remaining -= @intCast(ms_elapsed);
         }
@@ -405,48 +418,53 @@ pub const Page = struct {
             std.debug.print("\nactive requests: {d}\n", .{self.http_client.active});
             var n_ = self.http_client.handles.in_use.first;
             while (n_) |n| {
-                const transfer = Http.Transfer.fromEasy(n.data.conn.easy) catch |err| {
+                const handle: *Http.Client.Handle = @fieldParentPtr("node", n);
+                const transfer = Http.Transfer.fromEasy(handle.conn.easy) catch |err| {
                     std.debug.print(" - failed to load transfer: {any}\n", .{err});
                     break;
                 };
-                std.debug.print(" - {s}\n", .{transfer});
+                std.debug.print(" - {f}\n", .{transfer});
                 n_ = n.next;
             }
         }
 
         {
-            std.debug.print("\nqueued requests: {d}\n", .{self.http_client.queue.len});
+            std.debug.print("\nqueued requests: {d}\n", .{self.http_client.queue.len()});
             var n_ = self.http_client.queue.first;
             while (n_) |n| {
-                std.debug.print(" - {s}\n", .{n.data.url});
+                const transfer: *Http.Transfer = @fieldParentPtr("_node", n);
+                std.debug.print(" - {f}\n", .{transfer.uri});
                 n_ = n.next;
             }
         }
 
         {
-            std.debug.print("\nscripts: {d}\n", .{self.script_manager.scripts.len});
+            std.debug.print("\nscripts: {d}\n", .{self.script_manager.scripts.len()});
             var n_ = self.script_manager.scripts.first;
             while (n_) |n| {
-                std.debug.print(" - {s} complete: {any}\n", .{ n.data.script.url, n.data.complete });
+                const ps: *ScriptManager.PendingScript = @fieldParentPtr("node", n);
+                std.debug.print(" - {s} complete: {any}\n", .{ ps.script.url, ps.complete });
                 n_ = n.next;
             }
         }
 
         {
-            std.debug.print("\ndeferreds: {d}\n", .{self.script_manager.deferreds.len});
+            std.debug.print("\ndeferreds: {d}\n", .{self.script_manager.deferreds.len()});
             var n_ = self.script_manager.deferreds.first;
             while (n_) |n| {
-                std.debug.print(" - {s} complete: {any}\n", .{ n.data.script.url, n.data.complete });
+                const ps: *ScriptManager.PendingScript = @fieldParentPtr("node", n);
+                std.debug.print(" - {s} complete: {any}\n", .{ ps.script.url, ps.complete });
                 n_ = n.next;
             }
         }
 
         const now = std.time.milliTimestamp();
         {
-            std.debug.print("\nasyncs: {d}\n", .{self.script_manager.asyncs.len});
+            std.debug.print("\nasyncs: {d}\n", .{self.script_manager.asyncs.len()});
             var n_ = self.script_manager.asyncs.first;
             while (n_) |n| {
-                std.debug.print(" - {s} complete: {any}\n", .{ n.data.script.url, n.data.complete });
+                const ps: *ScriptManager.PendingScript = @fieldParentPtr("node", n);
+                std.debug.print(" - {s} complete: {any}\n", .{ ps.script.url, ps.complete });
                 n_ = n.next;
             }
         }
@@ -466,6 +484,20 @@ pub const Page = struct {
                 std.debug.print(" - {s} schedule: {d}ms\n", .{ task.name, task.ms - now });
             }
         }
+    }
+
+    fn notifyNetworkIdle(self: *Page) void {
+        std.debug.assert(self.notified_network_idle == .done);
+        self.session.browser.notification.dispatch(.page_network_idle, &.{
+            .timestamp = timestamp(),
+        });
+    }
+
+    fn notifyNetworkAlmostIdle(self: *Page) void {
+        std.debug.assert(self.notified_network_almost_idle == .done);
+        self.session.browser.notification.dispatch(.page_network_almost_idle, &.{
+            .timestamp = timestamp(),
+        });
     }
 
     pub fn origin(self: *const Page, arena: Allocator) ![]const u8 {
@@ -785,12 +817,12 @@ pub const Page = struct {
     }
 
     // The transfer arena is useful and interesting, but has a weird lifetime.
-    // When we're transfering from one page to another (via delayed navigation)
+    // When we're transferring from one page to another (via delayed navigation)
     // we need things in memory: like the URL that we're navigating to and
     // optionally the body to POST. That cannot exist in the page.arena, because
     // the page that we have is going to be destroyed and a new page is going
     // to be created. If we used the page.arena, we'd wouldn't be able to reset
-    // it between navigations.
+    // it between navigation.
     // So the transfer arena is meant to exist between a navigation event. It's
     // freed when the main html navigation is complete, either in pageDoneCallback
     // or pageErrorCallback. It needs to exist for this long because, if we set
@@ -912,10 +944,10 @@ pub const Page = struct {
             .cancelable = true,
             .key = kbe.key,
             .code = kbe.code,
-            .alt = kbe.alt,
-            .ctrl = kbe.ctrl,
-            .meta = kbe.meta,
-            .shift = kbe.shift,
+            .alt_key = kbe.alt,
+            .ctrl_key = kbe.ctrl,
+            .meta_key = kbe.meta,
+            .shift_key = kbe.shift,
         });
         _ = try parser.elementDispatchEvent(element, @ptrCast(event));
     }
@@ -1102,9 +1134,81 @@ pub const NavigateOpts = struct {
     header: ?[:0]const u8 = null,
 };
 
+const IdleNotification = union(enum) {
+    // hasn't started yet.
+    init,
+
+    // timestamp where the state was first triggered. If the state stays
+    // true (e.g. 0 nework activity for NetworkIdle, or <= 2 for NetworkAlmostIdle)
+    // for 500ms, it'll send the notification and transition to .done. If
+    // the state doesn't stay true, it'll revert to .init.
+    triggered: u64,
+
+    // notification sent - should never be reset
+    done,
+
+    // Returns `true` if we should send a notification. Only returns true if it
+    // was previously triggered 500+ milliseconds ago.
+    // active == true when the condition for the notification is true
+    // active == false when the condition for the notification is false
+    pub fn check(self: *IdleNotification, active: bool) bool {
+        if (active) {
+            switch (self.*) {
+                .done => {
+                    // Notification was already sent.
+                },
+                .init => {
+                    // This is the first time the condition was triggered (or
+                    // the first time after being un-triggered). Record the time
+                    // so that if the condition holds for long enough, we can
+                    // send a notification.
+                    self.* = .{ .triggered = milliTimestamp() };
+                },
+                .triggered => |ms| {
+                    // The condition was already triggered and was triggered
+                    // again. When this condition holds for 500+ms, we'll send
+                    // a notification.
+                    if (milliTimestamp() - ms >= 500) {
+                        // This is the only place in this function where we can
+                        // return true. The only place where we can tell our caller
+                        // "send the notification!".
+                        self.* = .done;
+                        return true;
+                    }
+                    // the state hasn't held for 500ms.
+                },
+            }
+        } else {
+            switch (self.*) {
+                .done => {
+                    // The condition became false, but we already sent the notification
+                    // There's nothing we can do, it stays .done. We never re-send
+                    // a notification or "undo" a sent notification (not that we can).
+                },
+                .init => {
+                    // The condition remains false
+                },
+                .triggered => {
+                    // The condition _had_ been true, and we were waiting (500ms)
+                    // for it to hold, but it hasn't. So we go back to waiting.
+                    self.* = .init;
+                },
+            }
+        }
+
+        // See above for the only case where we ever return true. All other
+        // paths go here. This means "don't send the notification". Maybe
+        // because it's already been sent, maybe because active is false, or
+        // maybe because the condition hasn't held long enough.
+        return false;
+    }
+};
+
 fn timestamp() u32 {
-    const ts = std.posix.clock_gettime(std.posix.CLOCK.MONOTONIC) catch unreachable;
-    return @intCast(ts.sec);
+    return @import("../datetime.zig").timestamp();
+}
+fn milliTimestamp() u64 {
+    return @import("../datetime.zig").milliTimestamp();
 }
 
 // A callback from libdom whenever a script tag is added to the DOM.
@@ -1122,7 +1226,7 @@ pub export fn scriptAddedCallback(ctx: ?*anyopaque, element: ?*parser.Element) c
         return;
     }
 
-    // It's posisble for a script to be dynamically added without a src.
+    // It's possible for a script to be dynamically added without a src.
     //   const s = document.createElement('script');
     //   document.getElementsByTagName('body')[0].appendChild(s);
     // The src can be set after. We handle that in HTMLScriptElement.set_src,

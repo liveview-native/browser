@@ -35,10 +35,13 @@ pub var arena_instance = std.heap.ArenaAllocator.init(std.heap.c_allocator);
 pub const arena_allocator = arena_instance.allocator();
 
 pub fn reset() void {
-    _ = arena_instance.reset(.{ .retain_capacity = {} });
+    _ = arena_instance.reset(.retain_capacity);
 }
 
 const App = @import("app.zig").App;
+const Env = @import("browser/env.zig").Env;
+const Browser = @import("browser/browser.zig").Browser;
+const Session = @import("browser/session.zig").Session;
 const parser = @import("browser/netsurf.zig");
 
 // Merged std.testing.expectEqual and std.testing.expectString
@@ -211,9 +214,6 @@ pub const Document = struct {
     arena: std.heap.ArenaAllocator,
 
     pub fn init(html: []const u8) !Document {
-        parser.deinit();
-        try parser.init();
-
         var fbs = std.io.fixedBufferStream(html);
         const html_doc = try parser.documentHTMLParse(fbs.reader(), "utf-8");
 
@@ -224,7 +224,6 @@ pub const Document = struct {
     }
 
     pub fn deinit(self: *Document) void {
-        parser.deinit();
         self.arena.deinit();
     }
 
@@ -366,17 +365,13 @@ fn isJsonValue(a: std.json.Value, b: std.json.Value) bool {
 pub const tracking_allocator = @import("root").tracking_allocator.allocator();
 pub const JsRunner = struct {
     const URL = @import("url.zig").URL;
-    const Env = @import("browser/env.zig").Env;
     const Page = @import("browser/page.zig").Page;
-    const Browser = @import("browser/browser.zig").Browser;
 
     page: *Page,
     browser: *Browser,
     allocator: Allocator,
 
     fn init(alloc: Allocator, opts: RunnerOpts) !JsRunner {
-        parser.deinit();
-
         const browser = try alloc.create(Browser);
         errdefer alloc.destroy(browser);
 
@@ -429,7 +424,7 @@ pub const JsRunner = struct {
                 }
                 return err;
             };
-            self.page.session.wait(1);
+            _ = self.page.session.wait(100);
             @import("root").js_runner_duration += std.time.Instant.since(try std.time.Instant.now(), start);
 
             if (case.@"1") |expected| {
@@ -491,16 +486,60 @@ pub fn jsRunner(alloc: Allocator, opts: RunnerOpts) !JsRunner {
 
 var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
 pub var test_app: *App = undefined;
+pub var test_browser: Browser = undefined;
+pub var test_session: *Session = undefined;
 
 pub fn setup() !void {
-    try parser.init();
-
     test_app = try App.init(gpa.allocator(), .{
         .run_mode = .serve,
         .tls_verify_host = false,
     });
+    errdefer test_app.deinit();
+
+    test_browser = try Browser.init(test_app);
+    errdefer test_browser.deinit();
+
+    test_session = try test_browser.newSession();
 }
 pub fn shutdown() void {
-    parser.deinit();
+    test_browser.deinit();
     test_app.deinit();
+}
+
+pub fn htmlRunner(file: []const u8) !void {
+    defer _ = arena_instance.reset(.retain_capacity);
+    const page = try test_session.createPage();
+    defer test_session.removePage();
+
+    const js_context = page.main_context;
+    var try_catch: Env.TryCatch = undefined;
+    try_catch.init(js_context);
+    defer try_catch.deinit();
+
+    const url = try std.fmt.allocPrint(arena_allocator, "http://localhost:9582/src/tests/{s}", .{file});
+    try page.navigate(url, .{});
+    _ = page.wait(2000);
+
+    const value = js_context.exec("testing.getStatus()", "testing.getStatus()") catch |err| {
+        const msg = try_catch.err(arena_allocator) catch @errorName(err) orelse "unknown";
+        std.debug.print("{s}: test failure\nError: {s}\n", .{ file, msg });
+        return err;
+    };
+
+    const status = try value.toString(arena_allocator);
+    if (std.mem.eql(u8, status, "ok")) {
+        return;
+    }
+
+    if (std.mem.eql(u8, status, "empty")) {
+        std.debug.print("{s}: No testing assertions were made\n", .{file});
+        return error.NoTestingAssertions;
+    }
+
+    if (std.mem.eql(u8, status, "fail")) {
+        return error.TestFail;
+    }
+
+    std.debug.print("{s}: Invalid test status: '{s}'\n", .{ file, status });
+    return error.TestFail;
 }
