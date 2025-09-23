@@ -365,7 +365,7 @@ pub fn pageNavigated(bc: anytype, event: *const Notification.PageNavigated) !voi
     if (page.auto_enable_dom_monitoring) {
         std.debug.print("dom monitoring enabled\n", .{});
         autoEnableDOMMonitoring(bc, page) catch |err| {
-            log.warn(.cdp, "autoenable DOM monitor fail", .{.err = err});
+            log.warn(.cdp, "autoenable DOM monitor fail", .{ .err = err });
         };
     } else {
         std.debug.print("nalok\n", .{});
@@ -424,28 +424,31 @@ fn autoEnableDOMMonitoring(bc: anytype, page: anytype) !void {
         fn handle(en: *parser.EventNode, event: *parser.Event) void {
             const self: *Self = @fieldParentPtr("event_node", en);
             self._handle(event) catch |err| {
-                log.err(.cdp, "DOM Observer handle error", .{.err = err});
+                log.err(.cdp, "DOM Observer handle error", .{ .err = err });
             };
         }
 
         fn _handle(self: *Self, event: *parser.Event) !void {
-            const mutation_event = parser.eventToMutationEvent(event);
-            const attribute_name = parser.mutationEventAttributeName(mutation_event) catch return;
-            const new_value = parser.mutationEventNewValue(mutation_event) catch null;
+            //const mutation_event = parser.eventToMutationEvent(event);
+            _ = self;
+            std.debug.print("event type: {s}\n", .{try parser.eventType(event)});
+            
+            //const attribute_name = parser.mutationEventAttributeName(mutation_event) catch return;
+            //const new_value = parser.mutationEventNewValue(mutation_event) catch null;
 
-            // Get the target node and register it to get a CDP node ID
-            const event_target = parser.eventTarget(event) orelse return;
-            const target_node = parser.eventTargetToNode(event_target);
-            const node = try self.bc.node_registry.register(target_node);
+            //// Get the target node and register it to get a CDP node ID
+            //const event_target = parser.eventTarget(event) orelse return;
+            //const target_node = parser.eventTargetToNode(event_target);
+            //const node = try self.bc.node_registry.register(target_node);
 
             // Send CDP DOM.attributeModified event
-            try self.cdp.sendEvent("DOM.attributeModified", .{
-                .nodeId = node.id,
-                .name = attribute_name,
-                .value = new_value,
-            }, .{
-                .session_id = self.session_id,
-            });
+            //try self.cdp.sendEvent("DOM.attributeModified", .{
+            //    .nodeId = node.id,
+            //    .name = attribute_name,
+            //    .value = new_value,
+            //}, .{
+            //    .session_id = self.session_id,
+            //});
         }
     };
 
@@ -459,13 +462,13 @@ fn autoEnableDOMMonitoring(bc: anytype, page: anytype) !void {
 
     // Add event listener to document element to catch all attribute changes
     const document_element = (try parser.documentGetDocumentElement(doc)) orelse return;
-        
-    _ = try parser.eventTargetAddEventListener(
-        parser.toEventTarget(parser.Element, document_element),
-        "DOMAttrModified",
-        &cdp_observer.event_node,
-        true, // use capture to catch all events
-    );
+    const event_target = parser.toEventTarget(parser.Element, document_element);
+    const event_node = &cdp_observer.event_node;
+    const monitored_events = .{"DOMAttrModified", "DOMCharacterDataModified", "DOMNodeInserted", "DOMNodeRemoved"};
+
+    inline for (monitored_events) | event | {
+        _ = try parser.eventTargetAddEventListener(event_target, event, event_node, true);
+    }
 }
 
 const testing = @import("../testing.zig");

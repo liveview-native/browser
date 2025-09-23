@@ -226,7 +226,31 @@ pub const Node = struct {
     }
 
     pub fn set_nodeValue(self: *parser.Node, data: []u8) !void {
+        // Get the old value before changing it
+        const old_value = try get_nodeValue(self);
+
+        // Get node type to check if this is character data
+        const node_type = try parser.nodeType(self);
+
+        // Perform the original operation
         try parser.nodeSetValue(self, data);
+
+        // If this is a character data node, manually dispatch DOMCharacterDataModified
+        if (node_type == parser.NodeType.text or
+            node_type == parser.NodeType.comment or
+            node_type == parser.NodeType.cdata_section) {
+
+            // Get the document to dispatch the event
+            const doc = try parser.nodeOwnerDocument(self);
+
+            // Dispatch DOMCharacterDataModified event
+            _ = parser.dispatchCharacterDataModifiedEvent(
+                doc.?,
+                self,
+                old_value,
+                data
+            ) catch {}; // Don't fail the whole operation if event dispatch fails
+        }
     }
 
     pub fn get_textContent(self: *parser.Node) !?[]const u8 {

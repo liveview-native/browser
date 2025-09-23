@@ -1319,6 +1319,28 @@ pub fn nodeSetTextContent(node: *Node, value: []const u8) !void {
     try DOMErr(err);
 }
 
+// Wrapper to dispatch DOMCharacterDataModified events
+pub fn dispatchCharacterDataModifiedEvent(
+    doc: *Document,
+    target: *Node,
+    old_value: ?[]const u8,
+    new_value: []const u8,
+) !bool {
+    const old_str = if (old_value) |old| try strFromData(old) else null;
+    const new_str = try strFromData(new_value);
+
+    var success: bool = undefined;
+    const err = c.__dom_dispatch_characterdata_modified_event(
+        doc,
+        @as(*c.dom_event_target, @ptrCast(target)),
+        old_str,
+        new_str,
+        &success
+    );
+    try DOMErr(err);
+    return success;
+}
+
 pub fn nodeGetChildNodes(node: *Node) !*NodeList {
     var nlist: ?*NodeList = null;
     const err = nodeVtable(node).dom_node_get_child_nodes.?(node, &nlist);
