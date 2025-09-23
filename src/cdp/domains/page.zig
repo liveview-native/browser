@@ -402,6 +402,8 @@ const LifecycleEvent = struct {
     timestamp: u32,
 };
 
+const EventType = enum { DOMAttrModified, DOMCharacterDataModified, DOMNodeInserted, DOMNodeRemoved };
+
 // Auto-enable DOM monitoring when pages are created/navigated
 fn autoEnableDOMMonitoring(bc: anytype, page: anytype) !void {
     const BC = @TypeOf(bc.*);
@@ -428,27 +430,104 @@ fn autoEnableDOMMonitoring(bc: anytype, page: anytype) !void {
             };
         }
 
+        fn DOMCharacterDataModified(self: *Self, event: *parser.Event) !void {
+            const mutation_event = parser.eventToMutationEvent(event);
+            const event_target = parser.eventTarget(event) orelse return;
+            const target_node = parser.eventTargetToNode(event_target);
+
+            // Register the node to get a CDP node ID
+            const node = try self.bc.node_registry.register(target_node);
+
+            // Get the new character data value
+            const new_value = parser.mutationEventNewValue(mutation_event) catch return orelse return;
+
+            // Send CDP DOM.characterDataModified event
+            try self.cdp.sendEvent("DOM.characterDataModified", .{
+                .nodeId = node.id,
+                .characterData = new_value,
+            }, .{
+                .session_id = self.session_id,
+            });
+        }
+
+        fn DOMNodeInserted(self: *Self, event: *parser.Event) !void {
+            const mutation_event = parser.eventToMutationEvent(event);
+            const event_target = parser.eventTarget(event) orelse return;
+            const inserted_node = parser.eventTargetToNode(event_target);
+
+            // Get the parent node from the mutation event's related node
+            const parent_node = parser.mutationEventRelatedNode(mutation_event) catch return orelse return;
+
+            // Register both the inserted node and parent node to get CDP node IDs
+            const inserted_node_cdp = try self.bc.node_registry.register(inserted_node);
+            const parent_node_cdp = try self.bc.node_registry.register(parent_node);
+
+            // Find the previous sibling and register it if it exists
+            const previous_sibling = try parser.nodePreviousSibling(inserted_node);
+            const previous_node_cdp = if (previous_sibling) |prev| try self.bc.node_registry.register(prev) else null;
+
+            // Send CDP DOM.childNodeInserted event
+            try self.cdp.sendEvent("DOM.childNodeInserted", .{
+                .parentNodeId = parent_node_cdp.id,
+                .previousNodeId = if (previous_node_cdp) |prev| prev.id else null,
+                .node = self.bc.nodeWriter(inserted_node_cdp, .{}), // Full node serialization
+            }, .{
+                .session_id = self.session_id,
+            });
+        }
+
+        fn DOMNodeRemoved(self: *Self, event: *parser.Event) !void {
+            const mutation_event = parser.eventToMutationEvent(event);
+            const event_target = parser.eventTarget(event) orelse return;
+            const removed_node = parser.eventTargetToNode(event_target);
+
+            // Get the parent node from the mutation event's related node
+            const parent_node = parser.mutationEventRelatedNode(mutation_event) catch return orelse return;
+
+            // Register both the removed node and parent node to get CDP node IDs
+            const removed_node_cdp = try self.bc.node_registry.register(removed_node);
+            const parent_node_cdp = try self.bc.node_registry.register(parent_node);
+
+            // Send CDP DOM.childNodeRemoved event
+            try self.cdp.sendEvent("DOM.childNodeRemoved", .{
+                .parentNodeId = parent_node_cdp.id,
+                .nodeId = removed_node_cdp.id,
+            }, .{
+                .session_id = self.session_id,
+            });
+        }
+
+        pub fn DOMAttrModified(self: *Self, event: *parser.Event) !void {
+            const mutation_event = parser.eventToMutationEvent(event);
+            const attribute_name = parser.mutationEventAttributeName(mutation_event) catch return;
+            const event_target = parser.eventTarget(event) orelse return;
+            const target_node = parser.eventTargetToNode(event_target);
+            const node = try self.bc.node_registry.register(target_node);
+            if (try parser.mutationEventNewValue(mutation_event)) |new_value| {
+                // Send CDP DOM.attributeModified event
+                try self.cdp.sendEvent("DOM.attributeModified", .{
+                    .nodeId = node.id,
+                    .name = attribute_name,
+                    .value = new_value,
+                }, .{
+                    .session_id = self.session_id,
+                });
+            } else {
+                // if the AttrModified had no "new value" associated, then it's "attributeRemoved"
+                try self.cdp.sendEvent("DOM.attributeRemoved", .{ .nodeId = node.id, .name = attribute_name }, .{ .session_id = self.session_id });
+            }
+        }
+
         fn _handle(self: *Self, event: *parser.Event) !void {
-            //const mutation_event = parser.eventToMutationEvent(event);
-            _ = self;
-            std.debug.print("event type: {s}\n", .{try parser.eventType(event)});
-            
-            //const attribute_name = parser.mutationEventAttributeName(mutation_event) catch return;
-            //const new_value = parser.mutationEventNewValue(mutation_event) catch null;
+            const event_type_str = try parser.eventType(event);
+            const tags = comptime std.meta.tags(EventType);
+            inline for (tags) |tag| {
+                if (std.mem.eql(u8, event_type_str, @tagName(tag))) {
+                    return @call(.auto, @field(Self, @tagName(tag)), .{ self, event });
+                }
+            }
 
-            //// Get the target node and register it to get a CDP node ID
-            //const event_target = parser.eventTarget(event) orelse return;
-            //const target_node = parser.eventTargetToNode(event_target);
-            //const node = try self.bc.node_registry.register(target_node);
-
-            // Send CDP DOM.attributeModified event
-            //try self.cdp.sendEvent("DOM.attributeModified", .{
-            //    .nodeId = node.id,
-            //    .name = attribute_name,
-            //    .value = new_value,
-            //}, .{
-            //    .session_id = self.session_id,
-            //});
+            return error.UnrecognizedEvent;
         }
     };
 
@@ -464,10 +543,9 @@ fn autoEnableDOMMonitoring(bc: anytype, page: anytype) !void {
     const document_element = (try parser.documentGetDocumentElement(doc)) orelse return;
     const event_target = parser.toEventTarget(parser.Element, document_element);
     const event_node = &cdp_observer.event_node;
-    const monitored_events = .{"DOMAttrModified", "DOMCharacterDataModified", "DOMNodeInserted", "DOMNodeRemoved"};
 
-    inline for (monitored_events) | event | {
-        _ = try parser.eventTargetAddEventListener(event_target, event, event_node, true);
+    inline for (std.meta.tags(EventType)) |tag| {
+        _ = try parser.eventTargetAddEventListener(event_target, @tagName(tag), event_node, true);
     }
 }
 
