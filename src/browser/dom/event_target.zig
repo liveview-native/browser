@@ -35,6 +35,7 @@ pub const Union = union(enum) {
     performance: *@import("performance.zig").Performance,
     media_query_list: *@import("../html/media_query_list.zig").MediaQueryList,
     navigation: *@import("../navigation/Navigation.zig"),
+    websocket: *@import("../websocket/websocket.zig").WebSocket,
 };
 
 // EventTarget implementation
@@ -87,6 +88,9 @@ pub const EventTarget = struct {
                 const NavigationEventTarget = @import("../navigation/NavigationEventTarget.zig");
                 const base: *NavigationEventTarget = @fieldParentPtr("base", @as(*parser.EventTargetTBase, @ptrCast(et)));
                 return .{ .navigation = @fieldParentPtr("proto", base) };
+            },
+            .websocket => {
+                return .{ .websocket = @fieldParentPtr("base", @as(*parser.EventTargetTBase, @ptrCast(et))) };
             },
         }
     }
