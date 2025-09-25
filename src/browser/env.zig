@@ -32,6 +32,7 @@ const WebApis = struct {
         @import("iterator/iterator.zig").Interfaces,
         @import("storage/storage.zig").Interfaces,
         @import("url/url.zig").Interfaces,
+        @import("websocket/websocket.zig").Interfaces,
         @import("xhr/xhr.zig").Interfaces,
         @import("xhr/form_data.zig").Interfaces,
         @import("xhr/File.zig"),
