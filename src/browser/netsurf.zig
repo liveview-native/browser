@@ -819,6 +819,7 @@ pub const EventTargetTBase = extern struct {
         message_port = 7,
         screen = 8,
         screen_orientation = 9,
+        websocket = 10,
     };
 
     vtable: ?*const c.struct_dom_event_target_vtable = &c.struct_dom_event_target_vtable{

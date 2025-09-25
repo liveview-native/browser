@@ -35,6 +35,7 @@ pub const Union = union(enum) {
     screen_orientation: *@import("../html/screen.zig").ScreenOrientation,
     performance: *@import("performance.zig").Performance,
     media_query_list: *@import("../html/media_query_list.zig").MediaQueryList,
+    websocket: *@import("../websocket/websocket.zig").WebSocket,
 };
 
 // EventTarget implementation
@@ -82,6 +83,9 @@ pub const EventTarget = struct {
             },
             .media_query_list => {
                 return .{ .media_query_list = @fieldParentPtr("base", @as(*parser.EventTargetTBase, @ptrCast(et))) };
+            },
+            .websocket => {
+                return .{ .websocket = @fieldParentPtr("base", @as(*parser.EventTargetTBase, @ptrCast(et))) };
             },
         }
     }

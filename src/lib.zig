@@ -8,6 +8,7 @@ const CDPT = @import("cdp/cdp.zig").CDPT;
 const BrowserContext = @import("cdp/cdp.zig").BrowserContext;
 
 export fn lightpanda_app_init() ?*anyopaque {
+    @import("log.zig").opts.level = .warn;
     const allocator = std.heap.c_allocator;
 
     const app = App.init(allocator, .{
