@@ -41,6 +41,7 @@ pub const Scope = enum {
     xhr,
     polyfill,
     mouse_event,
+    ws
 };
 
 const Opts = struct {
