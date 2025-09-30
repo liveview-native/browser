@@ -12,7 +12,7 @@
 	url = https://github.com/lightpanda-io/netsurf-buildsystem.git
 [submodule "vendor/netsurf/libhubbub"]
 	path = vendor/netsurf/libhubbub
-	url = https://github.com/lightpanda-io/libhubbub.git/
+	url = https://github.com/liveview-native/libhubbub.git/
 [submodule "tests/wpt"]
 	path = tests/wpt
 	url = https://github.com/lightpanda-io/wpt
