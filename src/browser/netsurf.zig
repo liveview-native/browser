@@ -188,7 +188,7 @@ pub const Tag = enum(u8) {
     h5 = c.DOM_HTML_ELEMENT_TYPE_H5,
     h6 = c.DOM_HTML_ELEMENT_TYPE_H6,
     hgroup = c.DOM_HTML_ELEMENT_TYPE_HGROUP,
-    html = c.DOM_HTML_ELEMENT_TYPE_HTML,
+    html = c.DOM_HTML_ELEMENT_TYPE_VML,
     i = c.DOM_HTML_ELEMENT_TYPE_I,
     isindex = c.DOM_HTML_ELEMENT_TYPE_ISINDEX,
     iframe = c.DOM_HTML_ELEMENT_TYPE_IFRAME,
@@ -1342,13 +1342,7 @@ pub fn dispatchCharacterDataModifiedEvent(
     const new_str = try strFromData(new_value);
 
     var success: bool = undefined;
-    const err = c.__dom_dispatch_characterdata_modified_event(
-        doc,
-        @as(*c.dom_event_target, @ptrCast(target)),
-        old_str,
-        new_str,
-        &success
-    );
+    const err = c.__dom_dispatch_characterdata_modified_event(doc, @as(*c.dom_event_target, @ptrCast(target)), old_str, new_str, &success);
     try DOMErr(err);
     return success;
 }
