@@ -31,7 +31,7 @@ pub const Opts = struct {
 
 // writer must be a std.io.Writer
 pub fn writeHTML(doc: *parser.Document, opts: Opts, writer: *std.Io.Writer) !void {
-    try writer.writeAll("<!DOCTYPE html>\n");
+    try writer.writeAll("<!DOCTYPE swiftui+xml>\n");
     try writeChildren(parser.documentToNode(doc), opts, writer);
     try writer.writeAll("\n");
 }
