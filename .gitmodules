@@ -6,7 +6,7 @@
 	url = https://github.com/lightpanda-io/libparserutils.git/
 [submodule "vendor/netsurf/libdom"]
 	path = vendor/netsurf/libdom
-	url = https://github.com/lightpanda-io/libdom.git/
+	url = https://github.com/liveview-native/libdom.git
 [submodule "vendor/netsurf/share/netsurf-buildsystem"]
 	path = vendor/netsurf/share/netsurf-buildsystem
 	url = https://github.com/lightpanda-io/netsurf-buildsystem.git
