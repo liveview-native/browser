@@ -99,6 +99,7 @@ pub const Page = struct {
         err: anyerror,
         parsed: void,
         html: parser.Parser,
+        xml: parser.Parser,
         text: parser.Parser,
         raw: std.ArrayListUnmanaged(u8),
         raw_done: []const u8,
@@ -317,7 +318,7 @@ pub const Page = struct {
                         return .extra_socket;
                     }
                 },
-                .html, .parsed => {
+                .html, .xml, .parsed => {
                     // The HTML page was parsed. We now either have JS scripts to
                     // download, or scheduled tasks to execute, or both.
 
@@ -633,6 +634,9 @@ pub const Page = struct {
     fn _documentIsComplete(self: *Page) !void {
         try HTMLDocument.documentIsComplete(self.window.document, self);
 
+        // Dump DOM tree after page is complete
+        self.dumpDOMTree();
+
         // dispatch window.load event
         const loadevt = try parser.eventCreate();
         defer parser.eventDestroy(loadevt);
@@ -676,6 +680,7 @@ pub const Page = struct {
             log.debug(.http, "navigate first chunk", .{ .content_type = mime.content_type, .len = data.len });
 
             self.mode = switch (mime.content_type) {
+                .text_xml => .{ .xml = try parser.Parser.init(mime.charsetString()) },
                 .text_html => .{ .html = try parser.Parser.init(mime.charsetString()) },
 
                 .application_json,
@@ -694,6 +699,7 @@ pub const Page = struct {
 
         switch (self.mode) {
             .html => |*p| try p.process(data),
+            .xml => |*p| try p.process(data),
             .text => |*p| {
                 // we have to escape the data...
                 var v = data;
@@ -723,6 +729,10 @@ pub const Page = struct {
         log.debug(.http, "navigate done", .{});
 
         var self: *Page = @ptrCast(@alignCast(ctx));
+
+        // Dump raw content before processing
+        self.dumpRawContent();
+
         self.clearTransferArena();
 
         switch (self.mode) {
@@ -748,7 +758,7 @@ pub const Page = struct {
                 try self.setDocument(html_doc);
                 self.documentIsComplete();
             },
-            .html => |*p| {
+            .html, .xml => |*p| {
                 const html_doc = p.html_doc;
                 p.deinit(); // don't need the parser anymore
 
@@ -1118,6 +1128,75 @@ pub const Page = struct {
             return self.main_context.stackTrace();
         }
         return null;
+    }
+
+    fn dumpDOMTree(self: *const Page) void {
+        const doc = parser.documentHTMLToDocument(self.window.document);
+
+        // Use an allocating writer like in the tests
+        var aw = std.Io.Writer.Allocating.init(self.arena);
+        defer aw.deinit();
+
+        Dump.writeHTML(doc, .{}, &aw.writer) catch |err| {
+            std.debug.print("Failed to dump DOM tree: {}\n", .{err});
+            return;
+        };
+
+        const html_content = aw.written();
+        std.debug.print("=== DOM Tree Dump ===\n{s}\n=== End DOM Tree ===\n", .{html_content});
+    }
+
+    fn dumpRawContent(self: *const Page) void {
+        std.debug.print("=== Raw Content Dump ===\n", .{});
+        std.debug.print("URL: {s}\n", .{self.url.raw});
+
+        switch (self.mode) {
+            .pre => {
+                std.debug.print("Content: [No body received]\n", .{});
+            },
+            .raw => |buf| {
+                std.debug.print("Content Type: Raw binary/unknown\n", .{});
+                std.debug.print("Content Length: {d} bytes\n", .{buf.items.len});
+                // Only show first 1000 chars to avoid overwhelming output
+                const preview_len = @min(buf.items.len, 1000);
+                std.debug.print("Content Preview: {s}", .{buf.items[0..preview_len]});
+                if (buf.items.len > 1000) {
+                    std.debug.print("... [truncated, total {d} bytes]", .{buf.items.len});
+                }
+                std.debug.print("\n", .{});
+            },
+            .text => {
+                std.debug.print("Content Type: Text (wrapped in HTML)\n", .{});
+                // The text mode wraps content in <pre> tags, we'll see the final result in DOM dump
+                std.debug.print("Content: [Text content wrapped in HTML structure]\n", .{});
+            },
+            .html => {
+                std.debug.print("Content Type: HTML\n", .{});
+                std.debug.print("Content: [HTML content - see DOM dump for parsed structure]\n", .{});
+            },
+            .parsed => {
+                std.debug.print("Content Type: HTML (parsed)\n", .{});
+                std.debug.print("Content: [Parsed HTML - see DOM dump for structure]\n", .{});
+            },
+            .xml => {
+                std.debug.print("Content Type: XML\n", .{});
+                std.debug.print("Content: [XML content - see DOM dump for parsed structure]\n", .{});
+            },
+            .raw_done => |data| {
+                std.debug.print("Content Type: Raw (completed)\n", .{});
+                std.debug.print("Content Length: {d} bytes\n", .{data.len});
+                const preview_len = @min(data.len, 1000);
+                std.debug.print("Content Preview: {s}", .{data[0..preview_len]});
+                if (data.len > 1000) {
+                    std.debug.print("... [truncated, total {d} bytes]", .{data.len});
+                }
+                std.debug.print("\n", .{});
+            },
+            .err => |err| {
+                std.debug.print("Content: [Error: {}]\n", .{err});
+            },
+        }
+        std.debug.print("=== End Raw Content ===\n", .{});
     }
 };
 
