@@ -17,6 +17,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
+const log = @import("../../log.zig");
 const Allocator = std.mem.Allocator;
 const Node = @import("../Node.zig");
 const css = @import("../../browser/dom/css.zig");
@@ -39,6 +40,7 @@ pub fn processMessage(cmd: anytype) !void {
         getContentQuads,
         getBoxModel,
         requestChildNodes,
+        getFrameOwner,
     }, cmd.input.action) orelse return error.UnknownMethod;
 
     switch (action) {
@@ -55,6 +57,7 @@ pub fn processMessage(cmd: anytype) !void {
         .getContentQuads => return getContentQuads(cmd),
         .getBoxModel => return getBoxModel(cmd),
         .requestChildNodes => return requestChildNodes(cmd),
+        .getFrameOwner => return getFrameOwner(cmd),
     }
 }
 
@@ -66,6 +69,10 @@ fn getDocument(cmd: anytype) !void {
         pierce: bool = false,
     };
     const params = try cmd.params(Params) orelse Params{};
+
+    if (params.pierce) {
+        log.warn(.cdp, "not implemented", .{ .feature = "DOM.getDocument: Not implemented pierce parameter" });
+    }
 
     const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
     const page = bc.session.currentPage() orelse return error.PageNotLoaded;
@@ -115,7 +122,7 @@ fn dispatchSetChildNodes(cmd: anytype, nodes: []*parser.Node) !void {
     for (nodes) |_n| {
         var n = _n;
         while (true) {
-            const p = try parser.nodeParentNode(n) orelse break;
+            const p = parser.nodeParentNode(n) orelse break;
 
             // Register the node.
             const node = try bc.node_registry.register(p);
@@ -144,7 +151,7 @@ fn dispatchSetChildNodes(cmd: anytype, nodes: []*parser.Node) !void {
         // If the node has no parent, it's the root node.
         // We don't dispatch event for it because we assume the root node is
         // dispatched via the DOM.getDocument command.
-        const p = try parser.nodeParentNode(node._node) orelse {
+        const p = parser.nodeParentNode(node._node) orelse {
             continue;
         };
 
@@ -206,7 +213,9 @@ fn querySelector(cmd: anytype) !void {
 
     const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
 
-    const node = bc.node_registry.lookup_by_id.get(params.nodeId) orelse return error.UnknownNode;
+    const node = bc.node_registry.lookup_by_id.get(params.nodeId) orelse {
+        return cmd.sendError(-32000, "Could not find node with given id", .{});
+    };
 
     const selected_node = try css.querySelector(
         cmd.arena,
@@ -233,7 +242,9 @@ fn querySelectorAll(cmd: anytype) !void {
 
     const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
 
-    const node = bc.node_registry.lookup_by_id.get(params.nodeId) orelse return error.UnknownNode;
+    const node = bc.node_registry.lookup_by_id.get(params.nodeId) orelse {
+        return cmd.sendError(-32000, "Could not find node with given id", .{});
+    };
 
     const arena = cmd.arena;
     const selected_nodes = try css.querySelectorAll(arena, node._node, params.selector);
@@ -263,13 +274,15 @@ fn resolveNode(cmd: anytype) !void {
     const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
     const page = bc.session.currentPage() orelse return error.PageNotLoaded;
 
-    var js_context = page.main_context;
+    var js_context = page.js;
     if (params.executionContextId) |context_id| {
         if (js_context.v8_context.debugContextId() != context_id) {
-            var isolated_world = bc.isolated_world orelse return error.ContextNotFound;
-            js_context = &(isolated_world.executor.js_context orelse return error.ContextNotFound);
-
-            if (js_context.v8_context.debugContextId() != context_id) return error.ContextNotFound;
+            for (bc.isolated_worlds.items) |*isolated_world| {
+                js_context = &(isolated_world.executor.context orelse return error.ContextNotFound);
+                if (js_context.v8_context.debugContextId() == context_id) {
+                    break;
+                }
+            } else return error.ContextNotFound;
         }
     }
 
@@ -300,16 +313,18 @@ fn describeNode(cmd: anytype) !void {
         nodeId: ?Node.Id = null,
         backendNodeId: ?Node.Id = null,
         objectId: ?[]const u8 = null,
-        depth: u32 = 1,
+        depth: i32 = 1,
         pierce: bool = false,
     })) orelse return error.InvalidParams;
 
-    if (params.depth != 1 or params.pierce) return error.NotImplemented;
+    if (params.pierce) {
+        log.warn(.cdp, "not implemented", .{ .feature = "DOM.describeNode: Not implemented pierce parameter" });
+    }
     const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
 
     const node = try getNode(cmd.arena, bc, params.nodeId, params.backendNodeId, params.objectId);
 
-    return cmd.sendResult(.{ .node = bc.nodeWriter(node, .{}) }, .{});
+    return cmd.sendResult(.{ .node = bc.nodeWriter(node, .{ .depth = params.depth }) }, .{});
 }
 
 // An array of quad vertices, x immediately followed by y for each point, points clock-wise.
@@ -353,7 +368,7 @@ fn scrollIntoViewIfNeeded(cmd: anytype) !void {
     const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
     const node = try getNode(cmd.arena, bc, params.nodeId, params.backendNodeId, params.objectId);
 
-    const node_type = parser.nodeType(node._node) catch return error.InvalidNode;
+    const node_type = parser.nodeType(node._node);
     switch (node_type) {
         .element => {},
         .document => {},
@@ -395,7 +410,7 @@ fn getContentQuads(cmd: anytype) !void {
     // visibility: hidden
     // display: none
 
-    if (try parser.nodeType(node._node) != .element) return error.NodeIsNotAnElement;
+    if (parser.nodeType(node._node) != .element) return error.NodeIsNotAnElement;
     // TODO implement for document or text
     // Most likely document would require some hierachgy in the renderer. It is left unimplemented till we have a good example.
     // Text may be tricky, multiple quads in case of multiple lines? empty quads of text  = ""?
@@ -421,7 +436,7 @@ fn getBoxModel(cmd: anytype) !void {
     const node = try getNode(cmd.arena, bc, params.nodeId, params.backendNodeId, params.objectId);
 
     // TODO implement for document or text
-    if (try parser.nodeType(node._node) != .element) return error.NodeIsNotAnElement;
+    if (parser.nodeType(node._node) != .element) return error.NodeIsNotAnElement;
     const element = parser.nodeToElement(node._node);
 
     const rect = try Element._getBoundingClientRect(element, page);
@@ -461,6 +476,24 @@ fn requestChildNodes(cmd: anytype) !void {
     return cmd.sendResult(null, .{});
 }
 
+fn getFrameOwner(cmd: anytype) !void {
+    const params = (try cmd.params(struct {
+        frameId: []const u8,
+    })) orelse return error.InvalidParams;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const target_id = bc.target_id orelse return error.TargetNotLoaded;
+    if (std.mem.eql(u8, target_id, params.frameId) == false) {
+        return cmd.sendError(-32000, "Frame with the given id does not belong to the target.", .{});
+    }
+
+    const page = bc.session.currentPage() orelse return error.PageNotLoaded;
+    const doc = parser.documentHTMLToDocument(page.window.document);
+
+    const node = try bc.node_registry.register(parser.documentToNode(doc));
+    return cmd.sendResult(.{ .nodeId = node.id, .backendNodeId = node.id }, .{});
+}
+
 const testing = @import("../testing.zig");
 
 test "cdp.dom: getSearchResults unknown search id" {
@@ -494,7 +527,7 @@ test "cdp.dom: search flow" {
             .method = "DOM.getSearchResults",
             .params = .{ .searchId = "0", .fromIndex = 0, .toIndex = 2 },
         });
-        try ctx.expectSentResult(.{ .nodeIds = &.{ 0, 1 } }, .{ .id = 13 });
+        try ctx.expectSentResult(.{ .nodeIds = &.{ 1, 2 } }, .{ .id = 13 });
 
         // different fromIndex
         try ctx.processMessage(.{
@@ -502,7 +535,7 @@ test "cdp.dom: search flow" {
             .method = "DOM.getSearchResults",
             .params = .{ .searchId = "0", .fromIndex = 1, .toIndex = 2 },
         });
-        try ctx.expectSentResult(.{ .nodeIds = &.{1} }, .{ .id = 14 });
+        try ctx.expectSentResult(.{ .nodeIds = &.{2} }, .{ .id = 14 });
 
         // different toIndex
         try ctx.processMessage(.{
@@ -510,7 +543,7 @@ test "cdp.dom: search flow" {
             .method = "DOM.getSearchResults",
             .params = .{ .searchId = "0", .fromIndex = 0, .toIndex = 1 },
         });
-        try ctx.expectSentResult(.{ .nodeIds = &.{0} }, .{ .id = 15 });
+        try ctx.expectSentResult(.{ .nodeIds = &.{1} }, .{ .id = 15 });
     }
 
     try ctx.processMessage(.{
@@ -534,16 +567,19 @@ test "cdp.dom: querySelector unknown search id" {
 
     _ = try ctx.loadBrowserContext(.{ .id = "BID-A", .html = "<p>1</p> <p>2</p>" });
 
-    try testing.expectError(error.UnknownNode, ctx.processMessage(.{
+    try ctx.processMessage(.{
         .id = 9,
         .method = "DOM.querySelector",
         .params = .{ .nodeId = 99, .selector = "" },
-    }));
-    try testing.expectError(error.UnknownNode, ctx.processMessage(.{
+    });
+    try ctx.expectSentError(-32000, "Could not find node with given id", .{});
+
+    try ctx.processMessage(.{
         .id = 9,
         .method = "DOM.querySelectorAll",
         .params = .{ .nodeId = 99, .selector = "" },
-    }));
+    });
+    try ctx.expectSentError(-32000, "Could not find node with given id", .{});
 }
 
 test "cdp.dom: querySelector Node not found" {
@@ -552,7 +588,7 @@ test "cdp.dom: querySelector Node not found" {
 
     _ = try ctx.loadBrowserContext(.{ .id = "BID-A", .html = "<p>1</p> <p>2</p>" });
 
-    try ctx.processMessage(.{ // Hacky way to make sure nodeId 0 exists in the registry
+    try ctx.processMessage(.{ // Hacky way to make sure nodeId 1 exists in the registry
         .id = 3,
         .method = "DOM.performSearch",
         .params = .{ .query = "p" },
@@ -562,13 +598,13 @@ test "cdp.dom: querySelector Node not found" {
     try testing.expectError(error.NodeNotFoundForGivenId, ctx.processMessage(.{
         .id = 4,
         .method = "DOM.querySelector",
-        .params = .{ .nodeId = 0, .selector = "a" },
+        .params = .{ .nodeId = 1, .selector = "a" },
     }));
 
     try ctx.processMessage(.{
         .id = 5,
         .method = "DOM.querySelectorAll",
-        .params = .{ .nodeId = 0, .selector = "a" },
+        .params = .{ .nodeId = 1, .selector = "a" },
     });
     try ctx.expectSentResult(.{ .nodeIds = &[_]u32{} }, .{ .id = 5 });
 }
@@ -579,7 +615,7 @@ test "cdp.dom: querySelector Nodes found" {
 
     _ = try ctx.loadBrowserContext(.{ .id = "BID-A", .html = "<div><p>2</p></div>" });
 
-    try ctx.processMessage(.{ // Hacky way to make sure nodeId 0 exists in the registry
+    try ctx.processMessage(.{ // Hacky way to make sure nodeId 1 exists in the registry
         .id = 3,
         .method = "DOM.performSearch",
         .params = .{ .query = "div" },
@@ -589,18 +625,18 @@ test "cdp.dom: querySelector Nodes found" {
     try ctx.processMessage(.{
         .id = 4,
         .method = "DOM.querySelector",
-        .params = .{ .nodeId = 0, .selector = "p" },
+        .params = .{ .nodeId = 1, .selector = "p" },
     });
     try ctx.expectSentEvent("DOM.setChildNodes", null, .{});
-    try ctx.expectSentResult(.{ .nodeId = 5 }, .{ .id = 4 });
+    try ctx.expectSentResult(.{ .nodeId = 6 }, .{ .id = 4 });
 
     try ctx.processMessage(.{
         .id = 5,
         .method = "DOM.querySelectorAll",
-        .params = .{ .nodeId = 0, .selector = "p" },
+        .params = .{ .nodeId = 1, .selector = "p" },
     });
     try ctx.expectSentEvent("DOM.setChildNodes", null, .{});
-    try ctx.expectSentResult(.{ .nodeIds = &.{5} }, .{ .id = 5 });
+    try ctx.expectSentResult(.{ .nodeIds = &.{6} }, .{ .id = 5 });
 }
 
 test "cdp.dom: getBoxModel" {
@@ -609,7 +645,7 @@ test "cdp.dom: getBoxModel" {
 
     _ = try ctx.loadBrowserContext(.{ .id = "BID-A", .html = "<div><p>2</p></div>" });
 
-    try ctx.processMessage(.{ // Hacky way to make sure nodeId 0 exists in the registry
+    try ctx.processMessage(.{ // Hacky way to make sure nodeId 1 exists in the registry
         .id = 3,
         .method = "DOM.getDocument",
     });
@@ -617,14 +653,14 @@ test "cdp.dom: getBoxModel" {
     try ctx.processMessage(.{
         .id = 4,
         .method = "DOM.querySelector",
-        .params = .{ .nodeId = 0, .selector = "p" },
+        .params = .{ .nodeId = 1, .selector = "p" },
     });
-    try ctx.expectSentResult(.{ .nodeId = 2 }, .{ .id = 4 });
+    try ctx.expectSentResult(.{ .nodeId = 3 }, .{ .id = 4 });
 
     try ctx.processMessage(.{
         .id = 5,
         .method = "DOM.getBoxModel",
-        .params = .{ .nodeId = 5 },
+        .params = .{ .nodeId = 6 },
     });
     try ctx.expectSentResult(.{ .model = BoxModel{
         .content = Quad{ 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0 },

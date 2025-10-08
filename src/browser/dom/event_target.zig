@@ -17,7 +17,6 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
-const Env = @import("../env.zig").Env;
 const parser = @import("../netsurf.zig");
 const Page = @import("../page.zig").Page;
 
@@ -48,7 +47,7 @@ pub const EventTarget = struct {
     pub fn toInterface(et: *parser.EventTarget, page: *Page) !Union {
         // libdom assumes that all event targets are libdom nodes. They are not.
 
-        switch (try parser.eventTargetInternalType(et)) {
+        switch (parser.eventTargetInternalType(et)) {
             .libdom_node => {
                 return .{ .node = try nod.Node.toInterface(@as(*parser.Node, @ptrCast(et))) };
             },
@@ -101,6 +100,9 @@ pub const EventTarget = struct {
         page: *Page,
     ) !void {
         _ = try EventHandler.register(page.arena, self, typ, listener, opts);
+        if (std.mem.eql(u8, typ, "slotchange")) {
+            try page.registerSlotChangeMonitor();
+        }
     }
 
     const RemoveEventListenerOpts = union(enum) {

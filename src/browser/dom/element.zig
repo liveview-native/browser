@@ -18,6 +18,7 @@
 
 const std = @import("std");
 
+const js = @import("../js/js.zig");
 const parser = @import("../netsurf.zig");
 const Page = @import("../page.zig").Page;
 
@@ -33,7 +34,6 @@ const HTMLElem = @import("../html/elements.zig");
 const ShadowRoot = @import("../dom/shadow_root.zig").ShadowRoot;
 
 const Animation = @import("Animation.zig");
-const JsObject = @import("../env.zig").JsObject;
 
 pub const Union = @import("../html/elements.zig").Union;
 
@@ -61,7 +61,7 @@ pub const Element = struct {
     pub fn toInterfaceT(comptime T: type, e: *parser.Element) !T {
         const tagname = try parser.elementGetTagName(e) orelse {
             // If the owner's document is HTML, assume we have an HTMLElement.
-            const doc = try parser.nodeOwnerDocument(parser.elementToNode(e));
+            const doc = parser.nodeOwnerDocument(parser.elementToNode(e));
             if (doc != null and !doc.?.is_html) {
                 return .{ .HTMLElement = @as(*parser.ElementHTML, @ptrCast(e)) };
             }
@@ -73,7 +73,7 @@ pub const Element = struct {
 
         const tag = parser.Tag.fromString(tagname) catch {
             // If the owner's document is HTML, assume we have an HTMLElement.
-            const doc = try parser.nodeOwnerDocument(parser.elementToNode(e));
+            const doc = parser.nodeOwnerDocument(parser.elementToNode(e));
             if (doc != null and doc.?.is_html) {
                 return .{ .HTMLElement = @as(*parser.ElementHTML, @ptrCast(e)) };
             }
@@ -87,12 +87,12 @@ pub const Element = struct {
     // JS funcs
     // --------
 
-    pub fn get_namespaceURI(self: *parser.Element) !?[]const u8 {
-        return try parser.nodeGetNamespace(parser.elementToNode(self));
+    pub fn get_namespaceURI(self: *parser.Element) ?[]const u8 {
+        return parser.nodeGetNamespace(parser.elementToNode(self));
     }
 
-    pub fn get_prefix(self: *parser.Element) !?[]const u8 {
-        return try parser.nodeGetPrefix(parser.elementToNode(self));
+    pub fn get_prefix(self: *parser.Element) ?[]const u8 {
+        return parser.nodeGetPrefix(parser.elementToNode(self));
     }
 
     pub fn get_localName(self: *parser.Element) ![]const u8 {
@@ -101,6 +101,14 @@ pub const Element = struct {
 
     pub fn get_tagName(self: *parser.Element) ![]const u8 {
         return try parser.nodeName(parser.elementToNode(self));
+    }
+
+    pub fn get_dir(self: *parser.Element) ![]const u8 {
+        return try parser.elementGetAttribute(self, "dir") orelse "";
+    }
+
+    pub fn set_dir(self: *parser.Element, dir: []const u8) !void {
+        return parser.elementSetAttribute(self, "dir", dir);
     }
 
     pub fn get_id(self: *parser.Element) ![]const u8 {
@@ -127,6 +135,10 @@ pub const Element = struct {
         return try parser.elementSetAttribute(self, "slot", slot);
     }
 
+    pub fn get_assignedSlot(self: *parser.Element, page: *const Page) !?*parser.Slot {
+        return @import("../SlotChangeMonitor.zig").findSlot(self, page);
+    }
+
     pub fn get_classList(self: *parser.Element) !*parser.TokenList {
         return try parser.tokenListCreate(self, "class");
     }
@@ -150,7 +162,7 @@ pub const Element = struct {
 
     pub fn set_innerHTML(self: *parser.Element, str: []const u8, page: *Page) !void {
         const node = parser.elementToNode(self);
-        const doc = try parser.nodeOwnerDocument(node) orelse return parser.DOMError.WrongDocument;
+        const doc = parser.nodeOwnerDocument(node) orelse return parser.DOMError.WrongDocument;
         // parse the fragment
         const fragment = try parser.documentParseFragmentFromStr(doc, str);
 
@@ -168,9 +180,9 @@ pub const Element = struct {
         // or an actual document. In a blank page, something like:
         //    x.innerHTML = '<script></script>';
         // does _not_ create an empty script, but in a real page, it does. Weird.
-        const html = try parser.nodeFirstChild(fragment_node) orelse return;
-        const head = try parser.nodeFirstChild(html) orelse return;
-        const body = try parser.nodeNextSibling(head) orelse return;
+        const html = parser.nodeFirstChild(fragment_node) orelse return;
+        const head = parser.nodeFirstChild(html) orelse return;
+        const body = parser.nodeNextSibling(head) orelse return;
 
         if (try parser.elementTag(self) == .template) {
             // HTMLElementTemplate is special. We don't append these as children
@@ -179,11 +191,9 @@ pub const Element = struct {
             // a new fragment
             const clean = try parser.documentCreateDocumentFragment(doc);
             const children = try parser.nodeGetChildNodes(body);
-            const ln = try parser.nodeListLength(children);
-            for (0..ln) |_| {
-                // always index 0, because nodeAppendChild moves the node out of
-                // the nodeList and into the new tree
-                const child = try parser.nodeListItem(children, 0) orelse continue;
+            // always index 0, because nodeAppendChild moves the node out of
+            // the nodeList and into the new tree
+            while (parser.nodeListItem(children, 0)) |child| {
                 _ = try parser.nodeAppendChild(@ptrCast(@alignCast(clean)), child);
             }
 
@@ -197,24 +207,99 @@ pub const Element = struct {
         {
             // First, copy some of the head element
             const children = try parser.nodeGetChildNodes(head);
-            const ln = try parser.nodeListLength(children);
-            for (0..ln) |_| {
-                // always index 0, because nodeAppendChild moves the node out of
-                // the nodeList and into the new tree
-                const child = try parser.nodeListItem(children, 0) orelse continue;
+            // always index 0, because nodeAppendChild moves the node out of
+            // the nodeList and into the new tree
+            while (parser.nodeListItem(children, 0)) |child| {
                 _ = try parser.nodeAppendChild(node, child);
             }
         }
 
         {
             const children = try parser.nodeGetChildNodes(body);
-            const ln = try parser.nodeListLength(children);
-            for (0..ln) |_| {
-                // always index 0, because nodeAppendChild moves the node out of
-                // the nodeList and into the new tree
-                const child = try parser.nodeListItem(children, 0) orelse continue;
+            // always index 0, because nodeAppendChild moves the node out of
+            // the nodeList and into the new tree
+            while (parser.nodeListItem(children, 0)) |child| {
                 _ = try parser.nodeAppendChild(node, child);
             }
+        }
+    }
+
+    /// Parses the given `input` string and inserts its children to an element at given `position`.
+    /// https://developer.mozilla.org/en-US/docs/Web/API/Element/insertAdjacentHTML
+    ///
+    /// TODO: Support for XML parsing and `TrustedHTML` instances.
+    pub fn _insertAdjacentHTML(self: *parser.Element, position: []const u8, input: []const u8) !void {
+        const self_node = parser.elementToNode(self);
+        const doc = parser.nodeOwnerDocument(self_node) orelse {
+            return parser.DOMError.WrongDocument;
+        };
+
+        // Parse the fragment.
+        // Should return error.Syntax on fail?
+        const fragment = try parser.documentParseFragmentFromStr(doc, input);
+        const fragment_node = parser.documentFragmentToNode(fragment);
+
+        // We always get it wrapped like so:
+        // <html><head></head><body>{ ... }</body></html>
+        // None of the following can be null.
+        const maybe_html = parser.nodeFirstChild(fragment_node);
+        std.debug.assert(maybe_html != null);
+        const html = maybe_html orelse return;
+
+        const maybe_body = parser.nodeLastChild(html);
+        std.debug.assert(maybe_body != null);
+        const body = maybe_body orelse return;
+
+        const children = try parser.nodeGetChildNodes(body);
+
+        // * `target_node` is `*Node` (where we actually insert),
+        // * `prev_node` is `?*Node`.
+        const target_node, const prev_node = blk: {
+            // Prefer case-sensitive match.
+            // "beforeend" was the most common case in my tests; we might adjust the order
+            // depending on which ones websites prefer most.
+            if (std.mem.eql(u8, position, "beforeend")) {
+                break :blk .{ self_node, null };
+            }
+
+            if (std.mem.eql(u8, position, "afterbegin")) {
+                // Get the first child; null indicates there are no children.
+                const first_child = parser.nodeFirstChild(self_node);
+                break :blk .{ self_node, first_child };
+            }
+
+            if (std.mem.eql(u8, position, "beforebegin")) {
+                // The node must have a parent node in order to use this variant.
+                const parent = parser.nodeParentNode(self_node) orelse return error.NoModificationAllowed;
+                // Parent cannot be Document.
+                // Should have checks for document_fragment and document_type?
+                if (parser.nodeType(parent) == .document) {
+                    return error.NoModificationAllowed;
+                }
+
+                break :blk .{ parent, self_node };
+            }
+
+            if (std.mem.eql(u8, position, "afterend")) {
+                // The node must have a parent node in order to use this variant.
+                const parent = parser.nodeParentNode(self_node) orelse return error.NoModificationAllowed;
+                // Parent cannot be Document.
+                if (parser.nodeType(parent) == .document) {
+                    return error.NoModificationAllowed;
+                }
+                // Get the next sibling or null; null indicates our node is the only one.
+                const sibling = parser.nodeNextSibling(self_node);
+                break :blk .{ parent, sibling };
+            }
+
+            // Thrown if:
+            // * position is not one of the four listed values.
+            // * The input is XML that is not well-formed.
+            return error.Syntax;
+        };
+
+        while (parser.nodeListItem(children, 0)) |child| {
+            _ = try parser.nodeInsertBefore(target_node, child, prev_node);
         }
     }
 
@@ -234,7 +319,7 @@ pub const Element = struct {
                 }
                 return parser.nodeToElement(current.node);
             }
-            current = try current.parent() orelse return null;
+            current = current.parent() orelse return null;
         }
     }
 
@@ -350,28 +435,18 @@ pub const Element = struct {
         return try parser.elementRemoveAttributeNode(self, attr);
     }
 
-    pub fn _getElementsByTagName(
-        self: *parser.Element,
-        tag_name: []const u8,
-        page: *Page,
-    ) !collection.HTMLCollection {
-        return try collection.HTMLCollectionByTagName(
-            page.arena,
+    pub fn _getElementsByTagName(self: *parser.Element, tag_name: js.String) !collection.HTMLCollection {
+        return collection.HTMLCollectionByTagName(
             parser.elementToNode(self),
-            tag_name,
+            tag_name.string,
             .{ .include_root = false },
         );
     }
 
-    pub fn _getElementsByClassName(
-        self: *parser.Element,
-        classNames: []const u8,
-        page: *Page,
-    ) !collection.HTMLCollection {
+    pub fn _getElementsByClassName(self: *parser.Element, class_names: js.String) !collection.HTMLCollection {
         return try collection.HTMLCollectionByClassName(
-            page.arena,
             parser.elementToNode(self),
-            classNames,
+            class_names.string,
             .{ .include_root = false },
         );
     }
@@ -407,13 +482,13 @@ pub const Element = struct {
     // NonDocumentTypeChildNode
     // https://dom.spec.whatwg.org/#interface-nondocumenttypechildnode
     pub fn get_previousElementSibling(self: *parser.Element) !?Union {
-        const res = try parser.nodePreviousElementSibling(parser.elementToNode(self));
+        const res = parser.nodePreviousElementSibling(parser.elementToNode(self));
         if (res == null) return null;
         return try toInterface(res.?);
     }
 
     pub fn get_nextElementSibling(self: *parser.Element) !?Union {
-        const res = try parser.nodeNextElementSibling(parser.elementToNode(self));
+        const res = parser.nodeNextElementSibling(parser.elementToNode(self));
         if (res == null) return null;
         return try toInterface(res.?);
     }
@@ -426,7 +501,7 @@ pub const Element = struct {
         while (true) {
             next = try walker.get_next(root, next) orelse return null;
             // ignore non-element nodes.
-            if (try parser.nodeType(next.?) != .element) {
+            if (parser.nodeType(next.?) != .element) {
                 continue;
             }
             const e = parser.nodeToElement(next.?);
@@ -474,7 +549,7 @@ pub const Element = struct {
     // Returns a 0 DOMRect object if the element is eventually detached from the main window
     pub fn _getBoundingClientRect(self: *parser.Element, page: *Page) !DOMRect {
         // Since we are lazy rendering we need to do this check. We could store the renderer in a viewport such that it could cache these, but it would require tracking changes.
-        if (!try page.isNodeAttached(parser.elementToNode(self))) {
+        if (!page.isNodeAttached(parser.elementToNode(self))) {
             return DOMRect{
                 .x = 0,
                 .y = 0,
@@ -493,7 +568,7 @@ pub const Element = struct {
     // We do not render so it only always return the element's bounding rect.
     // Returns an empty array if the element is eventually detached from the main window
     pub fn _getClientRects(self: *parser.Element, page: *Page) ![]DOMRect {
-        if (!try page.isNodeAttached(parser.elementToNode(self))) {
+        if (!page.isNodeAttached(parser.elementToNode(self))) {
             return &.{};
         }
         const heap_ptr = try page.call_arena.create(DOMRect);
@@ -524,6 +599,8 @@ pub const Element = struct {
         contentVisibilityAuto: bool,
         opacityProperty: bool,
         visibilityProperty: bool,
+        checkVisibilityCSS: bool,
+        checkOpacity: bool,
     };
 
     pub fn _checkVisibility(self: *parser.Element, opts: ?CheckVisibilityOpts) bool {
@@ -549,7 +626,7 @@ pub const Element = struct {
         }
 
         // Not sure what to do if there is no owner document
-        const doc = try parser.nodeOwnerDocument(@ptrCast(self)) orelse return error.InvalidArgument;
+        const doc = parser.nodeOwnerDocument(@ptrCast(self)) orelse return error.InvalidArgument;
         const fragment = try parser.documentCreateDocumentFragment(doc);
         const sr = try page.arena.create(ShadowRoot);
         sr.* = .{
@@ -583,7 +660,7 @@ pub const Element = struct {
         return sr;
     }
 
-    pub fn _animate(self: *parser.Element, effect: JsObject, opts: JsObject) !Animation {
+    pub fn _animate(self: *parser.Element, effect: js.Object, opts: js.Object) !Animation {
         _ = self;
         _ = opts;
         return Animation.constructor(effect, null);
@@ -595,7 +672,7 @@ pub const Element = struct {
         // for related elements JIT by walking the tree, but there could be
         // cases in libdom or the Zig WebAPI where this reference is kept
         const as_node: *parser.Node = @ptrCast(self);
-        const parent = try parser.nodeParentNode(as_node) orelse return;
+        const parent = parser.nodeParentNode(as_node) orelse return;
         _ = try Node._removeChild(parent, as_node);
     }
 };

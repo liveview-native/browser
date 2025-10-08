@@ -19,18 +19,19 @@
 const std = @import("std");
 
 const log = @import("log.zig");
+const js = @import("browser/js/js.zig");
+
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
 const App = @import("app.zig").App;
-const Env = @import("browser/env.zig").Env;
 const Browser = @import("browser/browser.zig").Browser;
 const TestHTTPServer = @import("TestHTTPServer.zig");
 
-const parser = @import("browser/netsurf.zig");
-const polyfill = @import("browser/polyfill/polyfill.zig");
-
 const WPT_DIR = "tests/wpt";
+
+// use in custom panic handler
+var current_test: ?[]const u8 = null;
 
 pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
@@ -69,6 +70,7 @@ pub fn main() !void {
 
     var app = try App.init(allocator, .{
         .run_mode = .fetch,
+        .user_agent = "User-Agent: Lightpanda/1.0 Lightpanda/WPT",
     });
     defer app.deinit();
 
@@ -78,6 +80,9 @@ pub fn main() !void {
     var i: usize = 0;
     while (try it.next()) |test_file| {
         defer _ = test_arena.reset(.retain_capacity);
+
+        defer current_test = null;
+        current_test = test_file;
 
         var err_out: ?[]const u8 = null;
         const result = run(
@@ -118,8 +123,8 @@ fn run(
 
     _ = page.wait(2000);
 
-    const js_context = page.main_context;
-    var try_catch: Env.TryCatch = undefined;
+    const js_context = page.js;
+    var try_catch: js.TryCatch = undefined;
     try_catch.init(js_context);
     defer try_catch.deinit();
 
@@ -450,3 +455,12 @@ fn httpHandler(req: *std.http.Server.Request) !void {
     const file_path = try std.fmt.bufPrint(&buf, WPT_DIR ++ "{s}", .{path});
     return TestHTTPServer.sendFile(req, file_path);
 }
+
+pub const panic = std.debug.FullPanic(struct {
+    pub fn panicFn(msg: []const u8, first_trace_addr: ?usize) noreturn {
+        if (current_test) |ct| {
+            std.debug.print("===panic running: {s}===\n", .{ct});
+        }
+        std.debug.defaultPanic(msg, first_trace_addr);
+    }
+}.panicFn);

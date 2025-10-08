@@ -17,9 +17,9 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
+const js = @import("../js/js.zig");
 const log = @import("../../log.zig");
 const parser = @import("../netsurf.zig");
-const Env = @import("../env.zig").Env;
 const Page = @import("../page.zig").Page;
 const EventTarget = @import("../dom/event_target.zig").EventTarget;
 
@@ -113,12 +113,12 @@ pub const AbortSignal = struct {
     }
 
     const ThrowIfAborted = union(enum) {
-        exception: Env.Exception,
+        exception: js.Exception,
         undefined: void,
     };
     pub fn _throwIfAborted(self: *const AbortSignal, page: *Page) ThrowIfAborted {
         if (self.aborted) {
-            const ex = page.main_context.throw(self.reason orelse DEFAULT_REASON);
+            const ex = page.js.throw(self.reason orelse DEFAULT_REASON);
             return .{ .exception = ex };
         }
         return .{ .undefined = {} };

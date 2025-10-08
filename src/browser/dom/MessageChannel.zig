@@ -20,13 +20,11 @@ const std = @import("std");
 const log = @import("../../log.zig");
 const parser = @import("../netsurf.zig");
 
-const Env = @import("../env.zig").Env;
+const js = @import("../js/js.zig");
 const Page = @import("../page.zig").Page;
 const EventTarget = @import("../dom/event_target.zig").EventTarget;
 const EventHandler = @import("../events/event.zig").EventHandler;
 
-const JsObject = Env.JsObject;
-const Function = Env.Function;
 const Allocator = std.mem.Allocator;
 
 const MAX_QUEUE_SIZE = 10;
@@ -72,29 +70,28 @@ pub const MessagePort = struct {
     pair: *MessagePort,
     closed: bool = false,
     started: bool = false,
-    onmessage_cbk: ?Function = null,
-    onmessageerror_cbk: ?Function = null,
+    onmessage_cbk: ?js.Function = null,
+    onmessageerror_cbk: ?js.Function = null,
     // This is the queue of messages to dispatch to THIS MessagePort when the
     // MessagePort is started.
-    queue: std.ArrayListUnmanaged(JsObject) = .empty,
+    queue: std.ArrayListUnmanaged(js.Object) = .empty,
 
     pub const PostMessageOption = union(enum) {
-        transfer: JsObject,
+        transfer: js.Object,
         options: Opts,
 
         pub const Opts = struct {
-            transfer: JsObject,
+            transfer: js.Object,
         };
     };
 
-    pub fn _postMessage(self: *MessagePort, obj: JsObject, opts_: ?PostMessageOption, page: *Page) !void {
+    pub fn _postMessage(self: *MessagePort, obj: js.Object, opts_: ?PostMessageOption, page: *Page) !void {
         if (self.closed) {
             return;
         }
 
         if (opts_ != null) {
             log.warn(.web_api, "not implemented", .{ .feature = "MessagePort postMessage options" });
-            return error.NotImplemented;
         }
 
         try self.pair.dispatchOrQueue(obj, page.arena);
@@ -125,10 +122,10 @@ pub const MessagePort = struct {
         self.pair.closed = true;
     }
 
-    pub fn get_onmessage(self: *MessagePort) ?Function {
+    pub fn get_onmessage(self: *MessagePort) ?js.Function {
         return self.onmessage_cbk;
     }
-    pub fn get_onmessageerror(self: *MessagePort) ?Function {
+    pub fn get_onmessageerror(self: *MessagePort) ?js.Function {
         return self.onmessageerror_cbk;
     }
 
@@ -153,7 +150,7 @@ pub const MessagePort = struct {
 
     // called from our pair. If port1.postMessage("x") is called, then this
     // will be called on port2.
-    fn dispatchOrQueue(self: *MessagePort, obj: JsObject, arena: Allocator) !void {
+    fn dispatchOrQueue(self: *MessagePort, obj: js.Object, arena: Allocator) !void {
         // our pair should have checked this already
         std.debug.assert(self.closed == false);
 
@@ -168,7 +165,7 @@ pub const MessagePort = struct {
         return self.queue.append(arena, try obj.persist());
     }
 
-    fn dispatch(self: *MessagePort, obj: JsObject) !void {
+    fn dispatch(self: *MessagePort, obj: js.Object) !void {
         // obj is already persisted, don't use `MessageEvent.constructor`, but
         // go directly to `init`, which assumes persisted objects.
         var evt = try MessageEvent.init(.{ .data = obj });
@@ -183,7 +180,7 @@ pub const MessagePort = struct {
         alloc: Allocator,
         typ: []const u8,
         listener: EventHandler.Listener,
-    ) !?Function {
+    ) !?js.Function {
         const target = @as(*parser.EventTarget, @ptrCast(self));
         const eh = (try EventHandler.register(alloc, target, typ, listener, null)) orelse unreachable;
         return eh.callback;
@@ -208,12 +205,12 @@ pub const MessageEvent = struct {
     pub const union_make_copy = true;
 
     proto: parser.Event,
-    data: ?JsObject,
+    data: ?js.Object,
 
     // You would think if port1 sends to port2, the source would be port2
     // (which is how I read the documentation), but it appears to always be
     // null. It can always be set explicitly via the constructor;
-    source: ?JsObject,
+    source: ?js.Object,
 
     origin: []const u8,
 
@@ -227,8 +224,8 @@ pub const MessageEvent = struct {
     ports: []*MessagePort,
 
     const Options = struct {
-        data: ?JsObject = null,
-        source: ?JsObject = null,
+        data: ?js.Object = null,
+        source: ?js.Object = null,
         origin: []const u8 = "",
         lastEventId: []const u8 = "",
         ports: []*MessagePort = &.{},
@@ -244,7 +241,7 @@ pub const MessageEvent = struct {
         });
     }
 
-    // This is like "constructor", but it assumes JsObjects have already been
+    // This is like "constructor", but it assumes js.Objects have already been
     // persisted. Necessary because this `new MessageEvent()` can be called
     // directly from JS OR from a port.postMessage. In the latter case, data
     // may have already been persisted (as it might need to be queued);
@@ -264,7 +261,7 @@ pub const MessageEvent = struct {
         };
     }
 
-    pub fn get_data(self: *const MessageEvent) !?JsObject {
+    pub fn get_data(self: *const MessageEvent) !?js.Object {
         return self.data;
     }
 
@@ -272,7 +269,7 @@ pub const MessageEvent = struct {
         return self.origin;
     }
 
-    pub fn get_source(self: *const MessageEvent) ?JsObject {
+    pub fn get_source(self: *const MessageEvent) ?js.Object {
         return self.source;
     }
 

@@ -21,7 +21,7 @@ const Allocator = std.mem.Allocator;
 
 const log = @import("../../log.zig");
 const parser = @import("../netsurf.zig");
-const generate = @import("../../runtime/generate.zig");
+const generate = @import("../js/generate.zig");
 
 const Page = @import("../page.zig").Page;
 const Node = @import("../dom/node.zig").Node;
@@ -36,6 +36,7 @@ const MouseEvent = @import("mouse_event.zig").MouseEvent;
 const KeyboardEvent = @import("keyboard_event.zig").KeyboardEvent;
 const ErrorEvent = @import("../html/error_event.zig").ErrorEvent;
 const MessageEvent = @import("../dom/MessageChannel.zig").MessageEvent;
+const PopStateEvent = @import("../html/History.zig").PopStateEvent;
 
 // Event interfaces
 pub const Interfaces = .{
@@ -46,6 +47,7 @@ pub const Interfaces = .{
     KeyboardEvent,
     ErrorEvent,
     MessageEvent,
+    PopStateEvent,
 };
 
 pub const Union = generate.Union(Interfaces);
@@ -73,6 +75,7 @@ pub const Event = struct {
             .error_event => .{ .ErrorEvent = @as(*ErrorEvent, @ptrCast(evt)).* },
             .message_event => .{ .MessageEvent = @as(*MessageEvent, @ptrCast(evt)).* },
             .keyboard_event => .{ .KeyboardEvent = @as(*parser.KeyboardEvent, @ptrCast(evt)) },
+            .pop_state => .{ .PopStateEvent = @as(*PopStateEvent, @ptrCast(evt)).* },
         };
     }
 
@@ -84,8 +87,8 @@ pub const Event = struct {
 
     // Getters
 
-    pub fn get_type(self: *parser.Event) ![]const u8 {
-        return try parser.eventType(self);
+    pub fn get_type(self: *parser.Event) []const u8 {
+        return parser.eventType(self);
     }
 
     pub fn get_target(self: *parser.Event, page: *Page) !?EventTargetUnion {
@@ -158,7 +161,7 @@ pub const Event = struct {
         const et_ = parser.eventTarget(self);
         const et = et_ orelse return &.{};
 
-        var node: ?*parser.Node = switch (try parser.eventTargetInternalType(et)) {
+        var node: ?*parser.Node = switch (parser.eventTargetInternalType(et)) {
             .libdom_node => @as(*parser.Node, @ptrCast(et)),
             .plain => parser.eventTargetToNode(et),
             else => {
@@ -174,8 +177,8 @@ pub const Event = struct {
                 .node = try Node.toInterface(n),
             });
 
-            node = try parser.nodeParentNode(n);
-            if (node == null and try parser.nodeType(n) == .document_fragment) {
+            node = parser.nodeParentNode(n);
+            if (node == null and parser.nodeType(n) == .document_fragment) {
                 // we have a non-continuous hook from a shadowroot to its host (
                 // it's parent element). libdom doesn't really support ShdowRoots
                 // and, for the most part, that works out well since it naturally
@@ -216,18 +219,17 @@ pub const Event = struct {
 pub const EventHandler = struct {
     once: bool,
     capture: bool,
-    callback: Function,
+    callback: js.Function,
     node: parser.EventNode,
     listener: *parser.EventListener,
 
-    const Env = @import("../env.zig").Env;
-    const Function = Env.Function;
+    const js = @import("../js/js.zig");
 
     pub const Listener = union(enum) {
-        function: Function,
-        object: Env.JsObject,
+        function: js.Function,
+        object: js.Object,
 
-        pub fn callback(self: Listener, target: *parser.EventTarget) !?Function {
+        pub fn callback(self: Listener, target: *parser.EventTarget) !?js.Function {
             return switch (self) {
                 .function => |func| try func.withThis(target),
                 .object => |obj| blk: {
@@ -328,7 +330,7 @@ pub const EventHandler = struct {
     fn handle(node: *parser.EventNode, event: *parser.Event) void {
         const ievent = Event.toInterface(event);
         const self: *EventHandler = @fieldParentPtr("node", node);
-        var result: Function.Result = undefined;
+        var result: js.Function.Result = undefined;
         self.callback.tryCall(void, .{ievent}, &result) catch {
             log.debug(.user_script, "callback error", .{
                 .err = result.exception,
@@ -339,7 +341,7 @@ pub const EventHandler = struct {
 
         if (self.once) {
             const target = parser.eventTarget(event).?;
-            const typ = parser.eventType(event) catch return;
+            const typ = parser.eventType(event);
             parser.eventTargetRemoveEventListener(
                 target,
                 typ,

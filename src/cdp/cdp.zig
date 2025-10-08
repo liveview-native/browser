@@ -21,18 +21,17 @@ const Allocator = std.mem.Allocator;
 const json = std.json;
 
 const log = @import("../log.zig");
+const js = @import("../browser/js/js.zig");
+const polyfill = @import("../browser/polyfill/polyfill.zig");
+
 const App = @import("../app.zig").App;
-const Env = @import("../browser/env.zig").Env;
 const Browser = @import("../browser/browser.zig").Browser;
 const Session = @import("../browser/session.zig").Session;
 const Page = @import("../browser/page.zig").Page;
-const Inspector = @import("../browser/env.zig").Env.Inspector;
 const Incrementing = @import("../id.zig").Incrementing;
 const Notification = @import("../notification.zig").Notification;
-const NetworkState = @import("domains/network.zig").NetworkState;
+const LogInterceptor = @import("domains/log.zig").LogInterceptor;
 const InterceptState = @import("domains/fetch.zig").InterceptState;
-
-const polyfill = @import("../browser/polyfill/polyfill.zig");
 
 pub const URL_BASE = "chrome://newtab/";
 pub const LOADER_ID = "LOADERID24DD2FD56CF1EF33C965C79C";
@@ -151,18 +150,18 @@ pub fn CDPT(comptime TypeProvider: type) type {
                 if (std.mem.eql(u8, input_session_id, "STARTUP")) {
                     is_startup = true;
                 } else if (self.isValidSessionId(input_session_id) == false) {
-                    return command.sendError(-32001, "Unknown sessionId");
+                    return command.sendError(-32001, "Unknown sessionId", .{});
                 }
             }
 
             if (is_startup) {
                 dispatchStartupCommand(&command) catch |err| {
-                    command.sendError(-31999, @errorName(err)) catch {};
+                    command.sendError(-31999, @errorName(err), .{}) catch {};
                     return err;
                 };
             } else {
                 dispatchCommand(&command, input.method) catch |err| {
-                    command.sendError(-31998, @errorName(err)) catch {};
+                    command.sendError(-31998, @errorName(err), .{}) catch {};
                     return err;
                 };
             }
@@ -330,8 +329,8 @@ pub fn BrowserContext(comptime CDP_T: type) type {
         node_registry: Node.Registry,
         node_search_list: Node.Search.List,
 
-        inspector: Inspector,
-        isolated_world: ?IsolatedWorld,
+        inspector: js.Inspector,
+        isolated_worlds: std.ArrayListUnmanaged(IsolatedWorld),
 
         http_proxy_changed: bool = false,
 
@@ -339,6 +338,8 @@ pub fn BrowserContext(comptime CDP_T: type) type {
         extra_headers: std.ArrayListUnmanaged([*c]const u8) = .empty,
 
         intercept_state: InterceptState,
+
+        log_interceptor: LogInterceptor(Self),
 
         // When network is enabled, we'll capture the transfer.id -> body
         // This is awfully memory intensive, but our underlying http client and
@@ -375,11 +376,12 @@ pub fn BrowserContext(comptime CDP_T: type) type {
                 .page_life_cycle_events = false, // TODO; Target based value
                 .node_registry = registry,
                 .node_search_list = undefined,
-                .isolated_world = null,
+                .isolated_worlds = .empty,
                 .inspector = inspector,
                 .notification_arena = cdp.notification_arena.allocator(),
                 .intercept_state = try InterceptState.init(allocator),
                 .captured_responses = .empty,
+                .log_interceptor = LogInterceptor(Self).init(allocator, self),
             };
             self.node_search_list = Node.Search.List.init(allocator, &self.node_registry);
             errdefer self.deinit();
@@ -391,6 +393,10 @@ pub fn BrowserContext(comptime CDP_T: type) type {
         }
 
         pub fn deinit(self: *Self) void {
+            // safe to call even if never registered
+            log.unregisterInterceptor();
+            self.log_interceptor.deinit();
+
             self.inspector.deinit();
 
             // abort all intercepted requests before closing the sesion/page
@@ -404,9 +410,10 @@ pub fn BrowserContext(comptime CDP_T: type) type {
             // so we need to shutdown the page one first.
             self.cdp.browser.closeSession();
 
-            if (self.isolated_world) |*world| {
+            for (self.isolated_worlds.items) |*world| {
                 world.deinit();
             }
+            self.isolated_worlds.clearRetainingCapacity();
             self.node_registry.deinit();
             self.node_search_list.deinit();
             self.cdp.browser.notification.unregisterAll(self);
@@ -427,19 +434,19 @@ pub fn BrowserContext(comptime CDP_T: type) type {
         }
 
         pub fn createIsolatedWorld(self: *Self, world_name: []const u8, grant_universal_access: bool) !*IsolatedWorld {
-            if (self.isolated_world != null) {
-                return error.CurrentlyOnly1IsolatedWorldSupported;
-            }
-
             var executor = try self.cdp.browser.env.newExecutionWorld();
             errdefer executor.deinit();
 
-            self.isolated_world = .{
-                .name = try self.arena.dupe(u8, world_name),
+            const owned_name = try self.arena.dupe(u8, world_name);
+            const world = try self.isolated_worlds.addOne(self.arena);
+
+            world.* = .{
+                .name = owned_name,
                 .executor = executor,
                 .grant_universal_access = grant_universal_access,
             };
-            return &self.isolated_world.?;
+
+            return world;
         }
 
         pub fn nodeWriter(self: *Self, root: *const Node, opts: Node.Writer.Opts) Node.Writer {
@@ -495,6 +502,18 @@ pub fn BrowserContext(comptime CDP_T: type) type {
             self.page_life_cycle_events = false;
             self.cdp.browser.notification.unregister(.page_network_idle, self);
             self.cdp.browser.notification.unregister(.page_network_almost_idle, self);
+        }
+
+        pub fn logEnable(self: *Self) void {
+            log.registerInterceptor(.{
+                .ctx = &self.log_interceptor,
+                .done = LogInterceptor(Self).done,
+                .writer = LogInterceptor(Self).writer,
+            });
+        }
+
+        pub fn logDisable(_: *const Self) void {
+            log.unregisterInterceptor();
         }
 
         pub fn onPageRemove(ctx: *anyopaque, _: Notification.PageRemove) !void {
@@ -661,7 +680,7 @@ pub fn BrowserContext(comptime CDP_T: type) type {
 /// An object id is unique across all contexts, different object ids can refer to the same Node in different contexts.
 const IsolatedWorld = struct {
     name: []const u8,
-    executor: Env.ExecutionWorld,
+    executor: js.ExecutionWorld,
     grant_universal_access: bool,
 
     // Polyfill loader for the isolated world.
@@ -672,8 +691,8 @@ const IsolatedWorld = struct {
         self.executor.deinit();
     }
     pub fn removeContext(self: *IsolatedWorld) !void {
-        if (self.executor.js_context == null) return error.NoIsolatedContextToRemove;
-        self.executor.removeJsContext();
+        if (self.executor.context == null) return error.NoIsolatedContextToRemove;
+        self.executor.removeContext();
     }
 
     // The isolate world must share at least some of the state with the related page, specifically the DocumentHTML
@@ -682,14 +701,27 @@ const IsolatedWorld = struct {
     // This also means this pointer becomes invalid after removePage untill a new page is created.
     // Currently we have only 1 page/frame and thus also only 1 state in the isolate world.
     pub fn createContext(self: *IsolatedWorld, page: *Page) !void {
-        if (self.executor.js_context != null) return error.Only1IsolatedContextSupported;
-        _ = try self.executor.createJsContext(
-            &page.window,
+        // if (self.executor.context != null) return error.Only1IsolatedContextSupported;
+        if (self.executor.context != null) {
+            log.warn(.cdp, "not implemented", .{
+                .feature = "createContext: Not implemented second isolated context creation",
+                .info = "reuse existing context",
+            });
+            return;
+        }
+        _ = try self.executor.createContext(
             page,
-            {},
             false,
-            Env.GlobalMissingCallback.init(&self.polyfill_loader),
+            js.GlobalMissingCallback.init(&self.polyfill_loader),
         );
+    }
+
+    pub fn createContextAndLoadPolyfills(self: *IsolatedWorld, arena: Allocator, page: *Page) !void {
+        // We need to recreate the isolated world context
+        try self.createContext(page);
+
+        const loader = @import("../browser/polyfill/polyfill.zig");
+        try loader.preload(arena, &self.executor.context.?);
     }
 };
 
@@ -757,10 +789,14 @@ pub fn Command(comptime CDP_T: type, comptime Sender: type) type {
             return self.cdp.sendEvent(method, p, opts);
         }
 
-        pub fn sendError(self: *Self, code: i32, message: []const u8) !void {
+        const SendErrorOpts = struct {
+            include_session_id: bool = true,
+        };
+        pub fn sendError(self: *Self, code: i32, message: []const u8, opts: SendErrorOpts) !void {
             return self.sender.sendJSON(.{
                 .id = self.input.id,
                 .@"error" = .{ .code = code, .message = message },
+                .sessionId = if (opts.include_session_id) self.input.session_id else null,
             });
         }
 

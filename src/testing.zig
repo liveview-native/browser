@@ -19,8 +19,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const Platform = @import("runtime/js.zig").Platform;
-
 pub const allocator = std.testing.allocator;
 pub const expectError = std.testing.expectError;
 pub const expect = std.testing.expect;
@@ -39,7 +37,7 @@ pub fn reset() void {
 }
 
 const App = @import("app.zig").App;
-const Env = @import("browser/env.zig").Env;
+const js = @import("browser/js/js.zig");
 const Browser = @import("browser/browser.zig").Browser;
 const Session = @import("browser/session.zig").Session;
 const parser = @import("browser/netsurf.zig");
@@ -362,128 +360,6 @@ fn isJsonValue(a: std.json.Value, b: std.json.Value) bool {
     }
 }
 
-pub const tracking_allocator = @import("root").tracking_allocator.allocator();
-pub const JsRunner = struct {
-    const URL = @import("url.zig").URL;
-    const Page = @import("browser/page.zig").Page;
-
-    page: *Page,
-    browser: *Browser,
-    allocator: Allocator,
-
-    fn init(alloc: Allocator, opts: RunnerOpts) !JsRunner {
-        const browser = try alloc.create(Browser);
-        errdefer alloc.destroy(browser);
-
-        browser.* = try Browser.init(test_app);
-        errdefer browser.deinit();
-
-        var session = try browser.newSession();
-
-        var page = try session.createPage();
-
-        // a bit hacky, but since we aren't going through page.navigate, there's
-        // some minimum setup we need to do
-        page.url = try URL.parse(opts.url, null);
-        try page.window.replaceLocation(.{
-            .url = try page.url.toWebApi(page.arena),
-        });
-
-        const html_doc = try parser.documentHTMLParseFromStr(opts.html);
-        try page.setDocument(html_doc);
-        page.mode = .{ .parsed = {} };
-
-        return .{
-            .page = page,
-            .browser = browser,
-            .allocator = alloc,
-        };
-    }
-
-    pub fn deinit(self: *JsRunner) void {
-        self.browser.deinit();
-        self.allocator.destroy(self.browser);
-    }
-
-    const RunOpts = struct {};
-    pub const Case = std.meta.Tuple(&.{ []const u8, ?[]const u8 });
-    pub fn testCases(self: *JsRunner, cases: []const Case, _: RunOpts) !void {
-        const js_context = self.page.main_context;
-        const arena = self.page.arena;
-
-        const start = try std.time.Instant.now();
-
-        for (cases, 0..) |case, i| {
-            var try_catch: Env.TryCatch = undefined;
-            try_catch.init(js_context);
-            defer try_catch.deinit();
-
-            const value = js_context.exec(case.@"0", null) catch |err| {
-                if (try try_catch.err(arena)) |msg| {
-                    std.debug.print("{s}\n\nCase: {d}\n{s}\n", .{ msg, i + 1, case.@"0" });
-                }
-                return err;
-            };
-            _ = self.page.session.wait(100);
-            @import("root").js_runner_duration += std.time.Instant.since(try std.time.Instant.now(), start);
-
-            if (case.@"1") |expected| {
-                const actual = try value.toString(arena);
-                if (std.mem.eql(u8, expected, actual) == false) {
-                    std.debug.print("Expected:\n{s}\n\nGot:\n{s}\n\nCase: {d}\n{s}\n", .{ expected, actual, i + 1, case.@"0" });
-                    return error.UnexpectedResult;
-                }
-            }
-        }
-    }
-
-    pub fn exec(self: *JsRunner, src: []const u8, name: ?[]const u8, err_msg: *?[]const u8) !void {
-        _ = try self.eval(src, name, err_msg);
-    }
-
-    pub fn eval(self: *JsRunner, src: []const u8, name: ?[]const u8, err_msg: *?[]const u8) !Env.Value {
-        const js_context = self.page.main_context;
-        const arena = self.page.arena;
-
-        var try_catch: Env.TryCatch = undefined;
-        try_catch.init(js_context);
-        defer try_catch.deinit();
-
-        return js_context.exec(src, name) catch |err| {
-            if (try try_catch.err(arena)) |msg| {
-                err_msg.* = msg;
-                std.debug.print("Error running script: {s}\n", .{msg});
-            }
-            return err;
-        };
-    }
-
-    pub fn dispatchDOMContentLoaded(self: *JsRunner) !void {
-        const HTMLDocument = @import("browser/html/document.zig").HTMLDocument;
-        const html_doc = self.page.window.document;
-        try HTMLDocument.documentIsLoaded(html_doc, self.page);
-    }
-};
-
-const RunnerOpts = struct {
-    url: []const u8 = "https://lightpanda.io/opensource-browser/",
-    html: []const u8 =
-        \\ <div id="content">
-        \\   <a id="link" href="foo" class="ok">OK</a>
-        \\   <p id="para-empty" class="ok empty">
-        \\     <span id="para-empty-child"></span>
-        \\   </p>
-        \\   <p id="para"> And</p>
-        \\   <!--comment-->
-        \\ </div>
-        \\
-    ,
-};
-
-pub fn jsRunner(alloc: Allocator, opts: RunnerOpts) !JsRunner {
-    return JsRunner.init(alloc, opts);
-}
-
 var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
 pub var test_app: *App = undefined;
 pub var test_browser: Browser = undefined;
@@ -493,6 +369,7 @@ pub fn setup() !void {
     test_app = try App.init(gpa.allocator(), .{
         .run_mode = .serve,
         .tls_verify_host = false,
+        .user_agent = "User-Agent: Lightpanda/1.0 internal-tester",
     });
     errdefer test_app.deinit();
 
@@ -502,23 +379,43 @@ pub fn setup() !void {
     test_session = try test_browser.newSession();
 }
 pub fn shutdown() void {
+    @import("root").v8_peak_memory = test_browser.env.isolate.getHeapStatistics().total_physical_size;
+    @import("root").libdom_memory = @import("browser/mimalloc.zig").getRSS();
     test_browser.deinit();
     test_app.deinit();
 }
 
 pub fn htmlRunner(file: []const u8) !void {
     defer _ = arena_instance.reset(.retain_capacity);
+
+    const start = try std.time.Instant.now();
+
     const page = try test_session.createPage();
     defer test_session.removePage();
 
-    const js_context = page.main_context;
-    var try_catch: Env.TryCatch = undefined;
+    page.arena = @import("root").tracking_allocator;
+
+    const js_context = page.js;
+    var try_catch: js.TryCatch = undefined;
     try_catch.init(js_context);
     defer try_catch.deinit();
 
     const url = try std.fmt.allocPrint(arena_allocator, "http://localhost:9582/src/tests/{s}", .{file});
     try page.navigate(url, .{});
     _ = page.wait(2000);
+    // page exits more aggressively in tests. We want to make sure this is called
+    // at lease once.
+    page.session.browser.runMicrotasks();
+    page.session.browser.runMessageLoop();
+
+    const needs_second_wait = try js_context.exec("testing._onPageWait.length > 0", "check_onPageWait");
+    if (needs_second_wait.value.toBool(page.js.isolate)) {
+        // sets the isSecondWait flag in testing.
+        _ = js_context.exec("testing._isSecondWait = true", "set_second_wait_flag") catch {};
+        _ = page.wait(2000);
+    }
+
+    @import("root").js_runner_duration += std.time.Instant.since(try std.time.Instant.now(), start);
 
     const value = js_context.exec("testing.getStatus()", "testing.getStatus()") catch |err| {
         const msg = try_catch.err(arena_allocator) catch @errorName(err) orelse "unknown";

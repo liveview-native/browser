@@ -102,12 +102,17 @@ pub fn newConnection(self: *Http) !Connection {
     return Connection.init(self.ca_blob, &self.opts);
 }
 
+pub fn newHeaders(self: *const Http) Headers {
+    return Headers.init(self.opts.user_agent);
+}
+
 pub const Connection = struct {
     easy: *c.CURL,
     opts: Connection.Opts,
 
     const Opts = struct {
         proxy_bearer_token: ?[:0]const u8,
+        user_agent: [:0]const u8,
     };
 
     // pointer to opts is not stable, don't hold a reference to it!
@@ -163,11 +168,19 @@ pub const Connection = struct {
         // debug
         if (comptime Http.ENABLE_DEBUG) {
             try errorCheck(c.curl_easy_setopt(easy, c.CURLOPT_VERBOSE, @as(c_long, 1)));
+
+            // Sometimes the default debug output hides some useful data. You can
+            // uncomment the following line (BUT KEEP THE LIVE ABOVE AS-IS), to
+            // get more control over the data (specifically, the `CURLINFO_TEXT`
+            // can include useful data).
+
+            // try errorCheck(c.curl_easy_setopt(easy, c.CURLOPT_DEBUGFUNCTION, debugCallback));
         }
 
         return .{
             .easy = easy,
             .opts = .{
+                .user_agent = opts.user_agent,
                 .proxy_bearer_token = opts.proxy_bearer_token,
             },
         };
@@ -230,7 +243,7 @@ pub const Connection = struct {
     pub fn request(self: *const Connection) !u16 {
         const easy = self.easy;
 
-        var header_list = try Headers.init();
+        var header_list = try Headers.init(self.opts.user_agent);
         defer header_list.deinit();
         try self.secretHeaders(&header_list);
         try errorCheck(c.curl_easy_setopt(easy, c.CURLOPT_HTTPHEADER, header_list.headers));
@@ -259,8 +272,8 @@ pub const Headers = struct {
     headers: *c.curl_slist,
     cookies: ?[*c]const u8,
 
-    pub fn init() !Headers {
-        const header_list = c.curl_slist_append(null, "User-Agent: Lightpanda/1.0");
+    pub fn init(user_agent: [:0]const u8) !Headers {
+        const header_list = c.curl_slist_append(null, user_agent);
         if (header_list == null) return error.OutOfMemory;
         return .{ .headers = header_list, .cookies = null };
     }
@@ -337,15 +350,16 @@ pub const Opts = struct {
     tls_verify_host: bool = true,
     http_proxy: ?[:0]const u8 = null,
     proxy_bearer_token: ?[:0]const u8 = null,
+    user_agent: [:0]const u8,
 };
 
-pub const Method = enum {
-    GET,
-    PUT,
-    POST,
-    DELETE,
-    HEAD,
-    OPTIONS,
+pub const Method = enum(u8) {
+    GET = 0,
+    PUT = 1,
+    POST = 2,
+    DELETE = 3,
+    HEAD = 4,
+    OPTIONS = 5,
 };
 
 // TODO: on BSD / Linux, we could just read the PEM file directly.
@@ -428,3 +442,14 @@ const LineWriter = struct {
         self.col = col + remain.len;
     }
 };
+
+pub fn debugCallback(_: *c.CURL, msg_type: c.curl_infotype, raw: [*c]u8, len: usize, _: *anyopaque) callconv(.c) void {
+    const data = raw[0..len];
+    switch (msg_type) {
+        c.CURLINFO_TEXT => std.debug.print("libcurl [text]: {s}\n", .{data}),
+        c.CURLINFO_HEADER_OUT => std.debug.print("libcurl [req-h]: {s}\n", .{data}),
+        c.CURLINFO_HEADER_IN => std.debug.print("libcurl [res-h]: {s}\n", .{data}),
+        // c.CURLINFO_DATA_IN => std.debug.print("libcurl [res-b]: {s}\n", .{data}),
+        else => std.debug.print("libcurl ?? {d}\n", .{msg_type}),
+    }
+}

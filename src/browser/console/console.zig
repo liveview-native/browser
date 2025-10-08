@@ -20,48 +20,47 @@ const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../../log.zig");
 
-const Allocator = std.mem.Allocator;
+const js = @import("../js/js.zig");
 const Page = @import("../page.zig").Page;
-const JsObject = @import("../env.zig").Env.JsObject;
 
 pub const Console = struct {
     // TODO: configurable writer
     timers: std.StringHashMapUnmanaged(u32) = .{},
     counts: std.StringHashMapUnmanaged(u32) = .{},
 
-    pub fn _lp(values: []JsObject, page: *Page) !void {
+    pub fn _lp(values: []js.Object, page: *Page) !void {
         if (values.len == 0) {
             return;
         }
         log.fatal(.console, "lightpanda", .{ .args = try serializeValues(values, page) });
     }
 
-    pub fn _log(values: []JsObject, page: *Page) !void {
+    pub fn _log(values: []js.Object, page: *Page) !void {
         if (values.len == 0) {
             return;
         }
         log.info(.console, "info", .{ .args = try serializeValues(values, page) });
     }
 
-    pub fn _info(values: []JsObject, page: *Page) !void {
+    pub fn _info(values: []js.Object, page: *Page) !void {
         return _log(values, page);
     }
 
-    pub fn _debug(values: []JsObject, page: *Page) !void {
+    pub fn _debug(values: []js.Object, page: *Page) !void {
         if (values.len == 0) {
             return;
         }
         log.debug(.console, "debug", .{ .args = try serializeValues(values, page) });
     }
 
-    pub fn _warn(values: []JsObject, page: *Page) !void {
+    pub fn _warn(values: []js.Object, page: *Page) !void {
         if (values.len == 0) {
             return;
         }
         log.warn(.console, "warn", .{ .args = try serializeValues(values, page) });
     }
 
-    pub fn _error(values: []JsObject, page: *Page) !void {
+    pub fn _error(values: []js.Object, page: *Page) !void {
         if (values.len == 0) {
             return;
         }
@@ -69,6 +68,16 @@ pub const Console = struct {
         log.warn(.console, "error", .{
             .args = try serializeValues(values, page),
             .stack = page.stackTrace() catch "???",
+        });
+    }
+
+    pub fn _trace(values: []js.Object, page: *Page) !void {
+        if (values.len == 0) {
+            return;
+        }
+        log.debug(.console, "debug", .{
+            .stack = page.js.stackTrace() catch "???",
+            .args = try serializeValues(values, page),
         });
     }
 
@@ -133,7 +142,7 @@ pub const Console = struct {
         log.warn(.console, "timer stop", .{ .label = label, .elapsed = elapsed - kv.value });
     }
 
-    pub fn _assert(assertion: JsObject, values: []JsObject, page: *Page) !void {
+    pub fn _assert(assertion: js.Object, values: []js.Object, page: *Page) !void {
         if (assertion.isTruthy()) {
             return;
         }
@@ -144,7 +153,7 @@ pub const Console = struct {
         log.info(.console, "assertion failed", .{ .values = serialized_values });
     }
 
-    fn serializeValues(values: []JsObject, page: *Page) ![]const u8 {
+    fn serializeValues(values: []js.Object, page: *Page) ![]const u8 {
         if (values.len == 0) {
             return "";
         }

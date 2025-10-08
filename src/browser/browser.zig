@@ -21,8 +21,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
+const js = @import("js/js.zig");
 const State = @import("State.zig");
-const Env = @import("env.zig").Env;
 const App = @import("../app.zig").App;
 const Session = @import("session.zig").Session;
 const Notification = @import("../notification.zig").Notification;
@@ -34,11 +34,12 @@ const HttpClient = @import("../http/Client.zig");
 // You can create multiple browser instances.
 // A browser contains only one session.
 pub const Browser = struct {
-    env: *Env,
+    env: *js.Env,
     app: *App,
     session: ?Session,
     allocator: Allocator,
     http_client: *HttpClient,
+    call_arena: ArenaAllocator,
     page_arena: ArenaAllocator,
     session_arena: ArenaAllocator,
     transfer_arena: ArenaAllocator,
@@ -48,7 +49,7 @@ pub const Browser = struct {
     pub fn init(app: *App) !Browser {
         const allocator = app.allocator;
 
-        const env = try Env.init(allocator, &app.platform, .{});
+        const env = try js.Env.init(allocator, &app.platform, .{});
         errdefer env.deinit();
 
         const notification = try Notification.init(allocator, app.notification);
@@ -63,6 +64,7 @@ pub const Browser = struct {
             .allocator = allocator,
             .notification = notification,
             .http_client = app.http.client,
+            .call_arena = ArenaAllocator.init(allocator),
             .page_arena = ArenaAllocator.init(allocator),
             .session_arena = ArenaAllocator.init(allocator),
             .transfer_arena = ArenaAllocator.init(allocator),
@@ -73,6 +75,7 @@ pub const Browser = struct {
     pub fn deinit(self: *Browser) void {
         self.closeSession();
         self.env.deinit();
+        self.call_arena.deinit();
         self.page_arena.deinit();
         self.session_arena.deinit();
         self.transfer_arena.deinit();

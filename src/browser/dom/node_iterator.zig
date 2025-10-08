@@ -18,8 +18,8 @@
 
 const std = @import("std");
 
+const js = @import("../js/js.zig");
 const parser = @import("../netsurf.zig");
-const Env = @import("../env.zig").Env;
 const NodeFilter = @import("node_filter.zig");
 const Node = @import("node.zig").Node;
 const NodeUnion = @import("node.zig").Union;
@@ -37,7 +37,7 @@ pub const NodeIterator = struct {
     reference_node: *parser.Node,
     what_to_show: u32,
     filter: ?NodeIteratorOpts,
-    filter_func: ?Env.Function,
+    filter_func: ?js.Function,
     pointer_before_current: bool = true,
     // used to track / block recursive filters
     is_in_callback: bool = false,
@@ -45,15 +45,15 @@ pub const NodeIterator = struct {
     // One of the few cases where null and undefined resolve to different default.
     // We need the raw JsObject so that we can probe the tri state:
     // null, undefined or i32.
-    pub const WhatToShow = Env.JsObject;
+    pub const WhatToShow = js.Object;
 
     pub const NodeIteratorOpts = union(enum) {
-        function: Env.Function,
-        object: struct { acceptNode: Env.Function },
+        function: js.Function,
+        object: struct { acceptNode: js.Function },
     };
 
     pub fn init(node: *parser.Node, what_to_show_: ?WhatToShow, filter: ?NodeIteratorOpts) !NodeIterator {
-        var filter_func: ?Env.Function = null;
+        var filter_func: ?js.Function = null;
         if (filter) |f| {
             filter_func = switch (f) {
                 .function => |func| func,
@@ -125,7 +125,7 @@ pub const NodeIterator = struct {
                 return try Node.toInterface(sibling);
             }
 
-            current = (try parser.nodeParentNode(current)) orelse break;
+            current = (parser.nodeParentNode(current)) orelse break;
         }
 
         return null;
@@ -147,7 +147,7 @@ pub const NodeIterator = struct {
         }
 
         var current = self.reference_node;
-        while (try parser.nodePreviousSibling(current)) |previous| {
+        while (parser.nodePreviousSibling(current)) |previous| {
             current = previous;
 
             switch (try NodeFilter.verify(self.what_to_show, self.filter_func, current)) {
@@ -189,11 +189,11 @@ pub const NodeIterator = struct {
 
     fn firstChild(self: *const NodeIterator, node: *parser.Node) !?*parser.Node {
         const children = try parser.nodeGetChildNodes(node);
-        const child_count = try parser.nodeListLength(children);
+        const child_count = parser.nodeListLength(children);
 
         for (0..child_count) |i| {
             const index: u32 = @intCast(i);
-            const child = (try parser.nodeListItem(children, index)) orelse return null;
+            const child = (parser.nodeListItem(children, index)) orelse return null;
 
             switch (try NodeFilter.verify(self.what_to_show, self.filter_func, child)) {
                 .accept => return child, // NOTE: Skip and reject are equivalent for NodeIterator, this is different from TreeWalker
@@ -206,12 +206,12 @@ pub const NodeIterator = struct {
 
     fn lastChild(self: *const NodeIterator, node: *parser.Node) !?*parser.Node {
         const children = try parser.nodeGetChildNodes(node);
-        const child_count = try parser.nodeListLength(children);
+        const child_count = parser.nodeListLength(children);
 
         var index: u32 = child_count;
         while (index > 0) {
             index -= 1;
-            const child = (try parser.nodeListItem(children, index)) orelse return null;
+            const child = (parser.nodeListItem(children, index)) orelse return null;
 
             switch (try NodeFilter.verify(self.what_to_show, self.filter_func, child)) {
                 .accept => return child, // NOTE: Skip and reject are equivalent for NodeIterator, this is different from TreeWalker
@@ -229,7 +229,7 @@ pub const NodeIterator = struct {
         var current = node;
         while (true) {
             if (current == self.root) return null;
-            current = (try parser.nodeParentNode(current)) orelse return null;
+            current = (parser.nodeParentNode(current)) orelse return null;
 
             switch (try NodeFilter.verify(self.what_to_show, self.filter_func, current)) {
                 .accept => return current,
@@ -243,7 +243,7 @@ pub const NodeIterator = struct {
         var current = node;
 
         while (true) {
-            current = (try parser.nodeNextSibling(current)) orelse return null;
+            current = (parser.nodeNextSibling(current)) orelse return null;
 
             switch (try NodeFilter.verify(self.what_to_show, self.filter_func, current)) {
                 .accept => return current,

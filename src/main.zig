@@ -22,12 +22,11 @@ const Allocator = std.mem.Allocator;
 
 const log = @import("log.zig");
 const App = @import("app.zig").App;
-const Http = @import("http/Http.zig");
 const Server = @import("server.zig").Server;
 const Browser = @import("browser/browser.zig").Browser;
+const DumpStripMode = @import("browser/dump.zig").Opts.StripMode;
 
 const build_config = @import("build_config");
-const parser = @import("browser/netsurf.zig");
 
 var _app: ?*App = null;
 var _server: ?Server = null;
@@ -108,6 +107,14 @@ fn run(alloc: Allocator) !void {
         log.opts.filter_scopes = lfs;
     }
 
+    const user_agent = blk: {
+        const USER_AGENT = "User-Agent: Lightpanda/1.0";
+        if (args.userAgentSuffix()) |suffix| {
+            break :blk try std.fmt.allocPrintSentinel(args_arena.allocator(), "{s} {s}", .{ USER_AGENT, suffix }, 0);
+        }
+        break :blk USER_AGENT;
+    };
+
     // _app is global to handle graceful shutdown.
     _app = try App.init(alloc, .{
         .run_mode = args.mode,
@@ -118,6 +125,7 @@ fn run(alloc: Allocator) !void {
         .http_connect_timeout_ms = args.httpConnectTiemout(),
         .http_max_host_open = args.httpMaxHostOpen(),
         .http_max_concurrent = args.httpMaxConcurrent(),
+        .user_agent = user_agent,
     });
 
     const app = _app.?;
@@ -168,7 +176,7 @@ fn run(alloc: Allocator) !void {
                 },
             };
 
-            _ = session.wait(5000); // 5 seconds
+            _ = session.fetchWait(5000); // 5 seconds
 
             // dump
             if (opts.dump) {
@@ -177,7 +185,7 @@ fn run(alloc: Allocator) !void {
                 try page.dump(.{
                     .page = page,
                     .with_base = opts.withbase,
-                    .exclude_scripts = opts.noscript,
+                    .strip_mode = opts.strip_mode,
                 }, &writer.interface);
                 try writer.interface.flush();
             }
@@ -260,6 +268,13 @@ const Command = struct {
         };
     }
 
+    fn userAgentSuffix(self: *const Command) ?[]const u8 {
+        return switch (self.mode) {
+            inline .serve, .fetch => |opts| opts.common.user_agent_suffix,
+            else => unreachable,
+        };
+    }
+
     const Mode = union(App.RunMode) {
         help: bool, // false when being printed because of an error
         fetch: Fetch,
@@ -278,8 +293,8 @@ const Command = struct {
         url: []const u8,
         dump: bool = false,
         common: Common,
-        noscript: bool = false,
         withbase: bool = false,
+        strip_mode: DumpStripMode = .{},
     };
 
     const Common = struct {
@@ -293,6 +308,7 @@ const Command = struct {
         log_level: ?log.Level = null,
         log_format: ?log.Format = null,
         log_filter_scopes: ?[]log.Scope = null,
+        user_agent_suffix: ?[]const u8 = null,
     };
 
     fn printUsageAndExit(self: *const Command, success: bool) void {
@@ -339,6 +355,9 @@ const Command = struct {
             \\                Defaults to
         ++ (if (builtin.mode == .Debug) " pretty." else " logfmt.") ++
             \\
+            \\ --user_agent_suffix
+            \\                Suffix to append to the Lightpanda/X.Y User-Agent
+            \\
         ;
 
         //                                                                     MAX_HELP_LEN|
@@ -354,7 +373,14 @@ const Command = struct {
             \\Options:
             \\--dump          Dumps document to stdout.
             \\                Defaults to false.
-            \\--noscript      Exclude <script> tags in dump. Defaults to false.
+            \\
+            \\--strip_mode    Comma separated list of tag groups to remove from dump
+            \\                the dump. e.g. --strip_mode js,css
+            \\                  - "js" script and link[as=script, rel=preload]
+            \\                  - "ui" includes img, picture, video, css and svg
+            \\                  - "css" includes style and link[rel=stylesheet]
+            \\                  - "full" includes js, ui and css
+            \\
             \\--with_base     Add a <base> tag in dump. Defaults to false.
             \\
         ++ common_options ++
@@ -439,6 +465,10 @@ fn inferMode(opt: []const u8) ?App.RunMode {
     }
 
     if (std.mem.eql(u8, opt, "--noscript")) {
+        return .fetch;
+    }
+
+    if (std.mem.eql(u8, opt, "--strip_mode")) {
         return .fetch;
     }
 
@@ -527,10 +557,10 @@ fn parseFetchArgs(
     args: *std.process.ArgIterator,
 ) !Command.Fetch {
     var dump: bool = false;
-    var noscript: bool = false;
     var withbase: bool = false;
     var url: ?[]const u8 = null;
     var common: Command.Common = .{};
+    var strip_mode: DumpStripMode = .{};
 
     while (args.next()) |opt| {
         if (std.mem.eql(u8, "--dump", opt)) {
@@ -539,12 +569,42 @@ fn parseFetchArgs(
         }
 
         if (std.mem.eql(u8, "--noscript", opt)) {
-            noscript = true;
+            log.warn(.app, "deprecation warning", .{
+                .feature = "--noscript argument",
+                .hint = "use '--strip_mode js' instead",
+            });
+            strip_mode.js = true;
             continue;
         }
 
         if (std.mem.eql(u8, "--with_base", opt)) {
             withbase = true;
+            continue;
+        }
+
+        if (std.mem.eql(u8, "--strip_mode", opt)) {
+            const str = args.next() orelse {
+                log.fatal(.app, "missing argument value", .{ .arg = "--strip_mode" });
+                return error.InvalidArgument;
+            };
+
+            var it = std.mem.splitScalar(u8, str, ',');
+            while (it.next()) |part| {
+                const trimmed = std.mem.trim(u8, part, &std.ascii.whitespace);
+                if (std.mem.eql(u8, trimmed, "js")) {
+                    strip_mode.js = true;
+                } else if (std.mem.eql(u8, trimmed, "ui")) {
+                    strip_mode.ui = true;
+                } else if (std.mem.eql(u8, trimmed, "css")) {
+                    strip_mode.css = true;
+                } else if (std.mem.eql(u8, trimmed, "full")) {
+                    strip_mode.js = true;
+                    strip_mode.ui = true;
+                    strip_mode.css = true;
+                } else {
+                    log.fatal(.app, "invalid option choice", .{ .arg = "--strip_mode", .value = trimmed });
+                }
+            }
             continue;
         }
 
@@ -573,8 +633,8 @@ fn parseFetchArgs(
         .url = url.?,
         .dump = dump,
         .common = common,
-        .noscript = noscript,
         .withbase = withbase,
+        .strip_mode = strip_mode,
     };
 }
 
@@ -710,6 +770,21 @@ fn parseCommonArg(
             });
         }
         common.log_filter_scopes = arr.items;
+        return true;
+    }
+
+    if (std.mem.eql(u8, "--user_agent_suffix", opt)) {
+        const str = args.next() orelse {
+            log.fatal(.app, "missing argument value", .{ .arg = "--user_agent_suffix" });
+            return error.InvalidArgument;
+        };
+        for (str) |c| {
+            if (!std.ascii.isPrint(c)) {
+                log.fatal(.app, "not printable character", .{ .arg = "--user_agent_suffix" });
+                return error.InvalidArgument;
+            }
+        }
+        common.user_agent_suffix = try allocator.dupe(u8, str);
         return true;
     }
 

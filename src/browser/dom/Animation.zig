@@ -18,19 +18,17 @@
 
 const std = @import("std");
 
+const js = @import("../js/js.zig");
 const Page = @import("../page.zig").Page;
-const JsObject = @import("../env.zig").JsObject;
-const Promise = @import("../env.zig").Promise;
-const PromiseResolver = @import("../env.zig").PromiseResolver;
 
 const Animation = @This();
 
-effect: ?JsObject,
-timeline: ?JsObject,
-ready_resolver: ?PromiseResolver,
-finished_resolver: ?PromiseResolver,
+effect: ?js.Object,
+timeline: ?js.Object,
+ready_resolver: ?js.PromiseResolver,
+finished_resolver: ?js.PromiseResolver,
 
-pub fn constructor(effect: ?JsObject, timeline: ?JsObject) !Animation {
+pub fn constructor(effect: ?js.Object, timeline: ?js.Object) !Animation {
     return .{
         .effect = if (effect) |eo| try eo.persist() else null,
         .timeline = if (timeline) |to| try to.persist() else null,
@@ -49,37 +47,37 @@ pub fn get_pending(self: *const Animation) bool {
     return false;
 }
 
-pub fn get_finished(self: *Animation, page: *Page) !Promise {
+pub fn get_finished(self: *Animation, page: *Page) !js.Promise {
     if (self.finished_resolver == null) {
-        const resolver = page.main_context.createPromiseResolver();
+        const resolver = page.js.createPromiseResolver(.none);
         try resolver.resolve(self);
         self.finished_resolver = resolver;
     }
     return self.finished_resolver.?.promise();
 }
 
-pub fn get_ready(self: *Animation, page: *Page) !Promise {
+pub fn get_ready(self: *Animation, page: *Page) !js.Promise {
     // never resolved, because we're always "finished"
     if (self.ready_resolver == null) {
-        const resolver = page.main_context.createPromiseResolver();
+        const resolver = page.js.createPromiseResolver(.none);
         self.ready_resolver = resolver;
     }
     return self.ready_resolver.?.promise();
 }
 
-pub fn get_effect(self: *const Animation) ?JsObject {
+pub fn get_effect(self: *const Animation) ?js.Object {
     return self.effect;
 }
 
-pub fn set_effect(self: *Animation, effect: JsObject) !void {
+pub fn set_effect(self: *Animation, effect: js.Object) !void {
     self.effect = try effect.persist();
 }
 
-pub fn get_timeline(self: *const Animation) ?JsObject {
+pub fn get_timeline(self: *const Animation) ?js.Object {
     return self.timeline;
 }
 
-pub fn set_timeline(self: *Animation, timeline: JsObject) !void {
+pub fn set_timeline(self: *Animation, timeline: js.Object) !void {
     self.timeline = try timeline.persist();
 }
 
