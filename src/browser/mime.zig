@@ -17,7 +17,6 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
-const Allocator = std.mem.Allocator;
 
 pub const Mime = struct {
     content_type: ContentType,
@@ -55,7 +54,7 @@ pub const Mime = struct {
     };
 
     /// Returns the null-terminated charset value.
-    pub inline fn charsetString(mime: *const Mime) [:0]const u8 {
+    pub fn charsetString(mime: *const Mime) [:0]const u8 {
         return @ptrCast(&mime.charset);
     }
 

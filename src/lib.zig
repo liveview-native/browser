@@ -18,6 +18,7 @@ export fn lightpanda_app_init() ?*anyopaque {
         // .tls_verify_host = false
         .run_mode = .serve,
         .tls_verify_host = false,
+        .user_agent = "Lightpanda",
         // .http_proxy = null,
         // .proxy_bearer_token = args.proxyBearerToken(),
         // .tls_verify_host = args.tlsVerifyHost(),

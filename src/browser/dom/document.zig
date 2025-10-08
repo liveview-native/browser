@@ -18,7 +18,7 @@
 
 const std = @import("std");
 
-const log = @import("../../log.zig");
+const js = @import("../js/js.zig");
 const parser = @import("../netsurf.zig");
 const Page = @import("../page.zig").Page;
 
@@ -37,8 +37,6 @@ const NodeIterator = @import("node_iterator.zig").NodeIterator;
 const Range = @import("range.zig").Range;
 
 const CustomEvent = @import("../events/custom_event.zig").CustomEvent;
-
-const Env = @import("../env.zig").Env;
 
 const DOMImplementation = @import("implementation.zig").DOMImplementation;
 
@@ -156,22 +154,14 @@ pub const Document = struct {
     // the spec changed to return an HTMLCollection instead.
     // That's why we reimplemented getElementsByTagName by using an
     // HTMLCollection in zig here.
-    pub fn _getElementsByTagName(
-        self: *parser.Document,
-        tag_name: []const u8,
-        page: *Page,
-    ) !collection.HTMLCollection {
-        return try collection.HTMLCollectionByTagName(page.arena, parser.documentToNode(self), tag_name, .{
+    pub fn _getElementsByTagName(self: *parser.Document, tag_name: js.String) !collection.HTMLCollection {
+        return collection.HTMLCollectionByTagName(parser.documentToNode(self), tag_name.string, .{
             .include_root = true,
         });
     }
 
-    pub fn _getElementsByClassName(
-        self: *parser.Document,
-        classNames: []const u8,
-        page: *Page,
-    ) !collection.HTMLCollection {
-        return try collection.HTMLCollectionByClassName(page.arena, parser.documentToNode(self), classNames, .{
+    pub fn _getElementsByClassName(self: *parser.Document, class_names: js.String) !collection.HTMLCollection {
+        return collection.HTMLCollectionByClassName(parser.documentToNode(self), class_names.string, .{
             .include_root = true,
         });
     }
@@ -308,18 +298,18 @@ pub const Document = struct {
         return &.{};
     }
 
-    pub fn get_adoptedStyleSheets(self: *parser.Document, page: *Page) !Env.JsObject {
+    pub fn get_adoptedStyleSheets(self: *parser.Document, page: *Page) !js.Object {
         const state = try page.getOrCreateNodeState(@ptrCast(@alignCast(self)));
         if (state.adopted_style_sheets) |obj| {
             return obj;
         }
 
-        const obj = try page.main_context.newArray(0).persist();
+        const obj = try page.js.createArray(0).persist();
         state.adopted_style_sheets = obj;
         return obj;
     }
 
-    pub fn set_adoptedStyleSheets(self: *parser.Document, sheets: Env.JsObject, page: *Page) !void {
+    pub fn set_adoptedStyleSheets(self: *parser.Document, sheets: js.Object, page: *Page) !void {
         const state = try page.getOrCreateNodeState(@ptrCast(@alignCast(self)));
         state.adopted_style_sheets = try sheets.persist();
     }

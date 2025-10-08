@@ -20,11 +20,11 @@ const std = @import("std");
 
 const Allocator = std.mem.Allocator;
 
-const Env = @import("env.zig").Env;
+const js = @import("js/js.zig");
 const Page = @import("page.zig").Page;
-const URL = @import("../url.zig").URL;
 const Browser = @import("browser.zig").Browser;
 const NavigateOpts = @import("page.zig").NavigateOpts;
+const History = @import("html/History.zig");
 
 const log = @import("../log.zig");
 const parser = @import("netsurf.zig");
@@ -50,9 +50,13 @@ pub const Session = struct {
     // page and start another.
     transfer_arena: Allocator,
 
-    executor: Env.ExecutionWorld,
+    executor: js.ExecutionWorld,
     storage_shed: storage.Shed,
     cookie_jar: storage.CookieJar,
+
+    // History is persistent across the "tab".
+    // https://developer.mozilla.org/en-US/docs/Web/API/History
+    history: History = .{},
 
     page: ?Page = null,
 
@@ -94,7 +98,7 @@ pub const Session = struct {
 
         // Start netsurf memory arena.
         // We need to init this early as JS event handlers may be registered through Runtime.evaluate before the first html doc is loaded
-        try parser.init();
+        parser.init();
 
         const page_arena = &self.browser.page_arena;
         _ = page_arena.reset(.{ .retain_with_limit = 1 * 1024 * 1024 });
@@ -102,7 +106,7 @@ pub const Session = struct {
 
         self.page = @as(Page, undefined);
         const page = &self.page.?;
-        try Page.init(page, page_arena.allocator(), self);
+        try Page.init(page, page_arena.allocator(), self.browser.call_arena.allocator(), self);
 
         log.debug(.browser, "create page", .{});
         // start JS env
@@ -122,7 +126,7 @@ pub const Session = struct {
         // registered a destructor (e.g. XMLHttpRequest).
         // Should be called before we deinit the page, because these objects
         // could be referencing it.
-        self.executor.removeJsContext();
+        self.executor.removeContext();
 
         self.page.?.deinit();
         self.page = null;
@@ -144,35 +148,62 @@ pub const Session = struct {
     };
 
     pub fn wait(self: *Session, wait_ms: i32) WaitResult {
-        if (self.queued_navigation) |qn| {
-            // This was already aborted on the page, but it would be pretty
-            // bad if old requests went to the new page, so let's make double sure
-            self.browser.http_client.abort();
-
-            // Page.navigateFromWebAPI terminatedExecution. If we don't resume
-            // it before doing a shutdown we'll get an error.
-            self.executor.resumeExecution();
-            self.removePage();
-            self.queued_navigation = null;
-
-            const page = self.createPage() catch |err| {
-                log.err(.browser, "queued navigation page error", .{
-                    .err = err,
-                    .url = qn.url,
-                });
-                return .done;
-            };
-
-            page.navigate(qn.url, qn.opts) catch |err| {
-                log.err(.browser, "queued navigation error", .{ .err = err, .url = qn.url });
-                return .done;
-            };
-        }
+        _ = self.processQueuedNavigation() catch {
+            // There was an error processing the queue navigation. This already
+            // logged the error, just return.
+            return .done;
+        };
 
         if (self.page) |*page| {
             return page.wait(wait_ms);
         }
         return .no_page;
+    }
+
+    pub fn fetchWait(self: *Session, wait_ms: i32) void {
+        while (true) {
+            if (self.page == null) {
+                return;
+            }
+            _ = self.page.?.wait(wait_ms);
+            const navigated = self.processQueuedNavigation() catch {
+                // There was an error processing the queue navigation. This already
+                // logged the error, just return.
+                return;
+            };
+
+            if (navigated == false) {
+                return;
+            }
+        }
+    }
+
+    fn processQueuedNavigation(self: *Session) !bool {
+        const qn = self.queued_navigation orelse return false;
+        // This was already aborted on the page, but it would be pretty
+        // bad if old requests went to the new page, so let's make double sure
+        self.browser.http_client.abort();
+
+        // Page.navigateFromWebAPI terminatedExecution. If we don't resume
+        // it before doing a shutdown we'll get an error.
+        self.executor.resumeExecution();
+        self.removePage();
+        self.queued_navigation = null;
+
+        const page = self.createPage() catch |err| {
+            log.err(.browser, "queued navigation page error", .{
+                .err = err,
+                .url = qn.url,
+            });
+            return err;
+        };
+
+        page.navigate(qn.url, qn.opts) catch |err| {
+            log.err(.browser, "queued navigation error", .{ .err = err, .url = qn.url });
+            return err;
+        };
+
+        return true;
     }
 };
 

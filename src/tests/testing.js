@@ -50,6 +50,15 @@
   function getStatus() {
     // if we're already in a fail state, return fail, nothing can recover this
     if (testing._status === 'fail') return 'fail';
+
+    if (testing._isSecondWait) {
+      for (const pw of (testing._onPageWait)) {
+        testing._captured = pw[1];
+        pw[0]();
+        testing._captured = null;
+      }
+    }
+
     // run any eventually's that we've captured
     for (const ev of testing._eventually) {
       testing._captured = ev[1];
@@ -92,10 +101,24 @@
     _registerErrorCallback();
   }
 
+  // Set expectations to happen on the next time that `page.wait` is executed.
+  //
+  // History specifically uses this as it queues navigation that needs to be checked
+  // when the next page is loaded.
+  function onPageWait(fn) {
+    // Store callbacks to run when page.wait() happens
+    testing._onPageWait.push([fn, {
+      script_id: document.currentScript.id,
+      stack: new Error().stack,
+    }]);
+  }
+
   async function async(promise, cb) {
-    const script_id = document.currentScript.id;
+    const script_id = document.currentScript ? document.currentScript.id : '<script id is unavailable in browsers>';
     const stack = new Error().stack;
+    this._captured = {script_id: script_id, stack: stack};
     const value = await promise;
+    // reset it, because await promise could change it.
     this._captured = {script_id: script_id, stack: stack};
     cb(value);
     this._captured = null;
@@ -107,9 +130,11 @@
     }
     testing._status = 'ok';
 
-    const script_id = testing._captured?.script_id || document.currentScript.id;
-    testing._executed_scripts.add(script_id);
-    _registerErrorCallback();
+    if (testing._captured || document.currentScript) {
+    	const script_id = testing._captured?.script_id || document.currentScript.id;
+    	testing._executed_scripts.add(script_id);
+	    _registerErrorCallback();
+    }
   }
 
   // We want to attach an onError callback to each <script>, so that we can
@@ -167,12 +192,15 @@
   window.testing = {
     _status: 'empty',
     _eventually: [],
+    _onPageWait: [],
     _executed_scripts: new Set(),
     _captured: null,
+    _isSecondWait: false,
     skip: skip,
     async: async,
     getStatus: getStatus,
     eventually: eventually,
+    onPageWait: onPageWait,
     expectEqual: expectEqual,
     expectError: expectError,
     withError: withError,

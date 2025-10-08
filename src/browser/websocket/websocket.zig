@@ -18,9 +18,9 @@
 
 const std = @import("std");
 
-const Env = @import("../env.zig").Env;
-const Function = Env.Function;
-const JsObject = Env.JsObject;
+const js = @import("../js/js.zig");
+const Function = js.Function;
+const JsObject = js.Object;
 const EventTarget = @import("../dom/event_target.zig").EventTarget;
 const EventHandler = @import("../events/event.zig").EventHandler;
 const parser = @import("../netsurf.zig");
@@ -484,9 +484,9 @@ pub const WebSocket = struct {
         const v8 = @import("v8");
 
         // Create JavaScript string from the received data
-        const js_string = v8.String.initUtf8(page.main_context.isolate, data);
+        const js_string = v8.String.initUtf8(page.js.isolate, data);
         const js_obj = JsObject{
-            .js_context = page.main_context,
+            .context = page.js,
             .js_obj = js_string.toValue().castTo(v8.Object),
         };
         const persistent_obj = try js_obj.persist();

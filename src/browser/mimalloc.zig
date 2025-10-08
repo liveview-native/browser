@@ -26,14 +26,9 @@ const c = @cImport({
     @cInclude("mimalloc.h");
 });
 
-const Error = error{
-    HeapNotNull,
-    HeapNull,
-};
-
 var heap: ?*c.mi_heap_t = null;
 
-pub fn create() Error!void {
+pub fn create() void {
     std.debug.assert(heap == null);
     heap = c.mi_heap_new();
     std.debug.assert(heap != null);
@@ -43,6 +38,45 @@ pub fn destroy() void {
     std.debug.assert(heap != null);
     c.mi_heap_destroy(heap.?);
     heap = null;
+}
+
+pub fn getRSS() i64 {
+    if (@import("builtin").mode != .Debug) {
+        // just don't trust my implementation, plus a caller might not know
+        // that this requires parsing some unstructured data
+        @compileError("Only available in debug builds");
+    }
+    var buf: [1024 * 8]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    var writer = std.Io.Writer.Allocating.init(fba.allocator());
+
+    c.mi_stats_print_out(struct {
+        fn print(msg: [*c]const u8, data: ?*anyopaque) callconv(.c) void {
+            const w: *std.Io.Writer = @ptrCast(@alignCast(data.?));
+            w.writeAll(std.mem.span(msg)) catch |err| {
+                std.debug.print("Failed to write mimalloc data: {}\n", .{err});
+            };
+        }
+    }.print, &writer.writer);
+
+    const data = writer.written();
+    const index = std.mem.indexOf(u8, data, "rss: ") orelse return -1;
+    const sep = std.mem.indexOfScalarPos(u8, data, index + 5, ' ') orelse return -2;
+    const value = std.fmt.parseFloat(f64, data[index + 5 .. sep]) catch return -3;
+    const unit = data[sep + 1 ..];
+    if (std.mem.startsWith(u8, unit, "KiB,")) {
+        return @as(i64, @intFromFloat(value)) * 1024;
+    }
+
+    if (std.mem.startsWith(u8, unit, "MiB,")) {
+        return @as(i64, @intFromFloat(value)) * 1024 * 1024;
+    }
+
+    if (std.mem.startsWith(u8, unit, "GiB,")) {
+        return @as(i64, @intFromFloat(value)) * 1024 * 1024 * 1024;
+    }
+
+    return -4;
 }
 
 pub export fn m_alloc(size: usize) callconv(.c) ?*anyopaque {

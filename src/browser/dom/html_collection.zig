@@ -23,7 +23,6 @@ const parser = @import("../netsurf.zig");
 
 const Element = @import("element.zig").Element;
 const Union = @import("element.zig").Union;
-const JsThis = @import("../env.zig").JsThis;
 const Walker = @import("walker.zig").Walker;
 
 const Matcher = union(enum) {
@@ -52,13 +51,13 @@ pub const MatchByTagName = struct {
     tag: []const u8,
     is_wildcard: bool,
 
-    fn init(arena: Allocator, tag_name: []const u8) !MatchByTagName {
+    fn init(tag_name: []const u8) MatchByTagName {
         if (std.mem.eql(u8, tag_name, "*")) {
             return .{ .tag = "*", .is_wildcard = true };
         }
 
         return .{
-            .tag = try arena.dupe(u8, tag_name),
+            .tag = tag_name,
             .is_wildcard = false,
         };
     }
@@ -69,15 +68,14 @@ pub const MatchByTagName = struct {
 };
 
 pub fn HTMLCollectionByTagName(
-    arena: Allocator,
     root: ?*parser.Node,
     tag_name: []const u8,
     opts: Opts,
-) !HTMLCollection {
-    return HTMLCollection{
+) HTMLCollection {
+    return .{
         .root = root,
         .walker = .{ .walkerDepthFirst = .{} },
-        .matcher = .{ .matchByTagName = try MatchByTagName.init(arena, tag_name) },
+        .matcher = .{ .matchByTagName = MatchByTagName.init(tag_name) },
         .mutable = opts.mutable,
         .include_root = opts.include_root,
     };
@@ -86,9 +84,9 @@ pub fn HTMLCollectionByTagName(
 pub const MatchByClassName = struct {
     class_names: []const u8,
 
-    fn init(arena: Allocator, class_names: []const u8) !MatchByClassName {
+    fn init(class_names: []const u8) !MatchByClassName {
         return .{
-            .class_names = try arena.dupe(u8, class_names),
+            .class_names = class_names,
         };
     }
 
@@ -107,15 +105,14 @@ pub const MatchByClassName = struct {
 };
 
 pub fn HTMLCollectionByClassName(
-    arena: Allocator,
     root: ?*parser.Node,
-    classNames: []const u8,
+    class_names: []const u8,
     opts: Opts,
 ) !HTMLCollection {
     return HTMLCollection{
         .root = root,
         .walker = .{ .walkerDepthFirst = .{} },
-        .matcher = .{ .matchByClassName = try MatchByClassName.init(arena, classNames) },
+        .matcher = .{ .matchByClassName = try MatchByClassName.init(class_names) },
         .mutable = opts.mutable,
         .include_root = opts.include_root,
     };
@@ -124,10 +121,8 @@ pub fn HTMLCollectionByClassName(
 pub const MatchByName = struct {
     name: []const u8,
 
-    fn init(arena: Allocator, name: []const u8) !MatchByName {
-        return .{
-            .name = try arena.dupe(u8, name),
-        };
+    fn init(name: []const u8) !MatchByName {
+        return .{ .name = name };
     }
 
     pub fn match(self: MatchByName, node: *parser.Node) !bool {
@@ -138,7 +133,6 @@ pub const MatchByName = struct {
 };
 
 pub fn HTMLCollectionByName(
-    arena: Allocator,
     root: ?*parser.Node,
     name: []const u8,
     opts: Opts,
@@ -146,7 +140,7 @@ pub fn HTMLCollectionByName(
     return HTMLCollection{
         .root = root,
         .walker = .{ .walkerDepthFirst = .{} },
-        .matcher = .{ .matchByName = try MatchByName.init(arena, name) },
+        .matcher = .{ .matchByName = try MatchByName.init(name) },
         .mutable = opts.mutable,
         .include_root = opts.include_root,
     };
@@ -203,8 +197,8 @@ pub fn HTMLCollectionChildren(
     };
 }
 
-pub fn HTMLCollectionEmpty() !HTMLCollection {
-    return HTMLCollection{
+pub fn HTMLCollectionEmpty() HTMLCollection {
+    return .{
         .root = null,
         .walker = .{ .walkerNone = .{} },
         .matcher = .{ .matchFalse = .{} },
@@ -226,14 +220,11 @@ pub const MatchByLinks = struct {
     }
 };
 
-pub fn HTMLCollectionByLinks(
-    root: ?*parser.Node,
-    opts: Opts,
-) !HTMLCollection {
-    return HTMLCollection{
+pub fn HTMLCollectionByLinks(root: ?*parser.Node, opts: Opts) HTMLCollection {
+    return .{
         .root = root,
         .walker = .{ .walkerDepthFirst = .{} },
-        .matcher = .{ .matchByLinks = MatchByLinks{} },
+        .matcher = .{ .matchByLinks = .{} },
         .mutable = opts.mutable,
         .include_root = opts.include_root,
     };
@@ -252,14 +243,11 @@ pub const MatchByAnchors = struct {
     }
 };
 
-pub fn HTMLCollectionByAnchors(
-    root: ?*parser.Node,
-    opts: Opts,
-) !HTMLCollection {
-    return HTMLCollection{
+pub fn HTMLCollectionByAnchors(root: ?*parser.Node, opts: Opts) HTMLCollection {
+    return .{
         .root = root,
         .walker = .{ .walkerDepthFirst = .{} },
-        .matcher = .{ .matchByAnchors = MatchByAnchors{} },
+        .matcher = .{ .matchByAnchors = .{} },
         .mutable = opts.mutable,
         .include_root = opts.include_root,
     };
@@ -344,7 +332,7 @@ pub const HTMLCollection = struct {
         var node = try self.start() orelse return 0;
 
         while (true) {
-            if (try parser.nodeType(node) == .element) {
+            if (parser.nodeType(node) == .element) {
                 if (try self.matcher.match(node)) {
                     len += 1;
                 }
@@ -371,7 +359,7 @@ pub const HTMLCollection = struct {
         }
 
         while (true) {
-            if (try parser.nodeType(node) == .element) {
+            if (parser.nodeType(node) == .element) {
                 if (try self.matcher.match(node)) {
                     // check if we found the searched element.
                     if (i == index) {
@@ -405,7 +393,7 @@ pub const HTMLCollection = struct {
         var node = try self.start() orelse return null;
 
         while (true) {
-            if (try parser.nodeType(node) == .element) {
+            if (parser.nodeType(node) == .element) {
                 if (try self.matcher.match(node)) {
                     const elem = @as(*parser.Element, @ptrCast(node));
 
@@ -440,24 +428,23 @@ pub const HTMLCollection = struct {
         return null;
     }
 
-    pub fn postAttach(self: *HTMLCollection, js_this: JsThis) !void {
-        const len = try self.get_length();
-        for (0..len) |i| {
-            const node = try self.item(@intCast(i)) orelse unreachable;
-            const e = @as(*parser.Element, @ptrCast(node));
-            const as_interface = try Element.toInterface(e);
-            try js_this.setIndex(@intCast(i), as_interface, .{});
+    pub fn indexed_get(self: *HTMLCollection, index: u32, has_value: *bool) !?Union {
+        return (try _item(self, index)) orelse {
+            has_value.* = false;
+            return undefined;
+        };
+    }
 
-            if (try item_name(e)) |name| {
-                // Even though an entry might have an empty id, the spec says
-                // that namedItem("") should always return null
-                if (name.len > 0) {
-                    // Named fields should not be enumerable (it is defined with
-                    // the LegacyUnenumerableNamedProperties flag.)
-                    try js_this.set(name, as_interface, .{ .DONT_ENUM = true });
-                }
-            }
+    pub fn named_get(self: *const HTMLCollection, name: []const u8, has_value: *bool) !?Union {
+        // Even though an entry might have an empty id, the spec says
+        // that namedItem("") should always return null
+        if (name.len == 0) {
+            return null;
         }
+        return (try _namedItem(self, name)) orelse {
+            has_value.* = false;
+            return undefined;
+        };
     }
 };
 

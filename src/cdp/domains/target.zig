@@ -79,7 +79,7 @@ fn createBrowserContext(cmd: anytype) !void {
     }
 
     const bc = cmd.createBrowserContext() catch |err| switch (err) {
-        error.AlreadyExists => return cmd.sendError(-32000, "Cannot have more than one browser context at a time"),
+        error.AlreadyExists => return cmd.sendError(-32000, "Cannot have more than one browser context at a time", .{}),
         else => return err,
     };
 
@@ -102,7 +102,7 @@ fn disposeBrowserContext(cmd: anytype) !void {
     })) orelse return error.InvalidParams;
 
     if (cmd.cdp.disposeBrowserContext(params.browserContextId) == false) {
-        return cmd.sendError(-32602, "No browser context with the given id found");
+        return cmd.sendError(-32602, "No browser context with the given id found", .{});
     }
     try cmd.sendResult(null, .{});
 }
@@ -147,7 +147,7 @@ fn createTarget(cmd: anytype) !void {
     {
         const aux_data = try std.fmt.allocPrint(cmd.arena, "{{\"isDefault\":true,\"type\":\"default\",\"frameId\":\"{s}\"}}", .{target_id});
         bc.inspector.contextCreated(
-            page.main_context,
+            page.js,
             "",
             try page.origin(cmd.arena),
             aux_data,
@@ -241,10 +241,10 @@ fn closeTarget(cmd: anytype) !void {
     }
 
     bc.session.removePage();
-    if (bc.isolated_world) |*world| {
+    for (bc.isolated_worlds.items) |*world| {
         world.deinit();
-        bc.isolated_world = null;
     }
+    bc.isolated_worlds.clearRetainingCapacity();
     bc.target_id = null;
 }
 

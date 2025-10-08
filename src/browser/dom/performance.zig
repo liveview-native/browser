@@ -18,9 +18,9 @@
 
 const std = @import("std");
 
+const js = @import("../js/js.zig");
 const parser = @import("../netsurf.zig");
 const EventTarget = @import("../dom/event_target.zig").EventTarget;
-const Env = @import("../env.zig").Env;
 const Page = @import("../page.zig").Page;
 
 const milliTimestamp = @import("../../datetime.zig").milliTimestamp;
@@ -61,7 +61,7 @@ pub const Performance = struct {
         return milliTimestamp() - self.time_origin;
     }
 
-    pub fn _mark(_: *Performance, name: []const u8, _options: ?PerformanceMark.Options, page: *Page) !PerformanceMark {
+    pub fn _mark(_: *Performance, name: js.String, _options: ?PerformanceMark.Options, page: *Page) !PerformanceMark {
         const mark: PerformanceMark = try .constructor(name, _options, page);
         // TODO: Should store this in an entries list
         return mark;
@@ -148,14 +148,14 @@ pub const PerformanceMark = struct {
     pub const prototype = *PerformanceEntry;
 
     proto: PerformanceEntry,
-    detail: ?Env.JsObject,
+    detail: ?js.Object,
 
     const Options = struct {
-        detail: ?Env.JsObject = null,
+        detail: ?js.Object = null,
         startTime: ?f64 = null,
     };
 
-    pub fn constructor(name: []const u8, _options: ?Options, page: *Page) !PerformanceMark {
+    pub fn constructor(name: js.String, _options: ?Options, page: *Page) !PerformanceMark {
         const perf = &page.window.performance;
 
         const options = _options orelse Options{};
@@ -166,14 +166,12 @@ pub const PerformanceMark = struct {
         }
 
         const detail = if (options.detail) |d| try d.persist() else null;
-
-        const duped_name = try page.arena.dupe(u8, name);
-        const proto = PerformanceEntry{ .name = duped_name, .entry_type = .mark, .start_time = start_time };
+        const proto = PerformanceEntry{ .name = name.string, .entry_type = .mark, .start_time = start_time };
 
         return .{ .proto = proto, .detail = detail };
     }
 
-    pub fn get_detail(self: *const PerformanceMark) ?Env.JsObject {
+    pub fn get_detail(self: *const PerformanceMark) ?js.Object {
         return self.detail;
     }
 };

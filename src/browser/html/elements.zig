@@ -18,9 +18,9 @@
 const std = @import("std");
 const log = @import("../../log.zig");
 
+const js = @import("../js/js.zig");
 const parser = @import("../netsurf.zig");
-const generate = @import("../../runtime/generate.zig");
-const Env = @import("../env.zig").Env;
+const generate = @import("../js/generate.zig");
 const Page = @import("../page.zig").Page;
 
 const urlStitch = @import("../../url.zig").URL.stitch;
@@ -133,14 +133,14 @@ pub const HTMLElement = struct {
 
     pub fn get_innerText(e: *parser.ElementHTML) ![]const u8 {
         const n = @as(*parser.Node, @ptrCast(e));
-        return try parser.nodeTextContent(n) orelse "";
+        return parser.nodeTextContent(n) orelse "";
     }
 
     pub fn set_innerText(e: *parser.ElementHTML, s: []const u8) !void {
         const n = @as(*parser.Node, @ptrCast(e));
 
         // create text node.
-        const doc = try parser.nodeOwnerDocument(n) orelse return error.NoDocument;
+        const doc = parser.nodeOwnerDocument(n) orelse return error.NoDocument;
         const t = try parser.documentCreateTextNode(doc, s);
 
         // remove existing children.
@@ -167,12 +167,12 @@ pub const HTMLElement = struct {
         focusVisible: bool,
     };
     pub fn _focus(e: *parser.ElementHTML, _: ?FocusOpts, page: *Page) !void {
-        if (!try page.isNodeAttached(@ptrCast(e))) {
+        if (!page.isNodeAttached(@ptrCast(e))) {
             return;
         }
 
         const Document = @import("../dom/document.zig").Document;
-        const root_node = try parser.nodeGetRootNode(@ptrCast(e));
+        const root_node = parser.nodeGetRootNode(@ptrCast(e));
         try Document.setFocus(@ptrCast(root_node), e, page);
     }
 };
@@ -251,7 +251,7 @@ pub const HTMLAnchorElement = struct {
     }
 
     pub fn get_text(self: *parser.Anchor) !?[]const u8 {
-        return try parser.nodeTextContent(parser.anchorToNode(self));
+        return parser.nodeTextContent(parser.anchorToNode(self));
     }
 
     pub fn set_text(self: *parser.Anchor, v: []const u8) !void {
@@ -757,13 +757,21 @@ pub const HTMLLinkElement = struct {
     pub const prototype = *HTMLElement;
     pub const subtype = .node;
 
+    pub fn get_rel(self: *parser.Link) ![]const u8 {
+        return parser.linkGetRel(self);
+    }
+
+    pub fn set_rel(self: *parser.Link, rel: []const u8) !void {
+        return parser.linkSetRel(self, rel);
+    }
+
     pub fn get_href(self: *parser.Link) ![]const u8 {
-        return try parser.linkGetHref(self);
+        return parser.linkGetHref(self);
     }
 
     pub fn set_href(self: *parser.Link, href: []const u8, page: *const Page) !void {
         const full = try urlStitch(page.call_arena, href, page.url.raw, .{});
-        return try parser.linkSetHref(self, full);
+        return parser.linkSetHref(self, full);
     }
 };
 
@@ -879,7 +887,7 @@ pub const HTMLScriptElement = struct {
             //    s.src = '...';
             // This should load the script.
             // addFromElement protects against double execution.
-            try page.script_manager.addFromElement(@ptrCast(@alignCast(self)));
+            try page.script_manager.addFromElement(@ptrCast(@alignCast(self)), "dynamic");
         }
     }
 
@@ -992,22 +1000,22 @@ pub const HTMLScriptElement = struct {
         );
     }
 
-    pub fn get_onload(self: *parser.Script, page: *Page) !?Env.Function {
+    pub fn get_onload(self: *parser.Script, page: *Page) !?js.Function {
         const state = page.getNodeState(@ptrCast(@alignCast(self))) orelse return null;
         return state.onload;
     }
 
-    pub fn set_onload(self: *parser.Script, function: ?Env.Function, page: *Page) !void {
+    pub fn set_onload(self: *parser.Script, function: ?js.Function, page: *Page) !void {
         const state = try page.getOrCreateNodeState(@ptrCast(@alignCast(self)));
         state.onload = function;
     }
 
-    pub fn get_onerror(self: *parser.Script, page: *Page) !?Env.Function {
+    pub fn get_onerror(self: *parser.Script, page: *Page) !?js.Function {
         const state = page.getNodeState(@ptrCast(@alignCast(self))) orelse return null;
         return state.onerror;
     }
 
-    pub fn set_onerror(self: *parser.Script, function: ?Env.Function, page: *Page) !void {
+    pub fn set_onerror(self: *parser.Script, function: ?js.Function, page: *Page) !void {
         const state = try page.getOrCreateNodeState(@ptrCast(@alignCast(self)));
         state.onerror = function;
     }
@@ -1064,7 +1072,7 @@ pub const HTMLSlotElement = struct {
         // First we look for any explicitly assigned nodes (via the slot attribute)
         {
             const slot_name = try parser.elementGetAttribute(@ptrCast(@alignCast(self)), "name");
-            var root = try parser.nodeGetRootNode(node);
+            var root = parser.nodeGetRootNode(node);
             if (page.getNodeState(root)) |state| {
                 if (state.shadow_root) |sr| {
                     root = @ptrCast(@alignCast(sr.host));
@@ -1076,7 +1084,7 @@ pub const HTMLSlotElement = struct {
             var next: ?*parser.Node = null;
             while (true) {
                 next = try w.get_next(root, next) orelse break;
-                if (try parser.nodeType(next.?) != .element) {
+                if (parser.nodeType(next.?) != .element) {
                     if (slot_name == null and !element_only) {
                         // default slot (with no name), takes everything
                         try arr.append(page.call_arena, try Node.toInterface(next.?));
@@ -1105,7 +1113,7 @@ pub const HTMLSlotElement = struct {
         // we'll collect the children of the slot - the defaults.
         {
             const nl = try parser.nodeGetChildNodes(node);
-            const len = try parser.nodeListLength(nl);
+            const len = parser.nodeListLength(nl);
             if (len == 0) {
                 return &.{};
             }
@@ -1113,8 +1121,8 @@ pub const HTMLSlotElement = struct {
             var assigned = try page.call_arena.alloc(NodeUnion, len);
             var i: usize = 0;
             while (true) : (i += 1) {
-                const child = try parser.nodeListItem(nl, @intCast(i)) orelse break;
-                if (!element_only or try parser.nodeType(child) == .element) {
+                const child = parser.nodeListItem(nl, @intCast(i)) orelse break;
+                if (!element_only or parser.nodeType(child) == .element) {
                     assigned[i] = try Node.toInterface(child);
                 }
             }
@@ -1343,6 +1351,8 @@ test "Browser: HTML.HtmlStyleElement" {
 test "Browser: HTML.HtmlScriptElement" {
     try testing.htmlRunner("html/script/script.html");
     try testing.htmlRunner("html/script/inline_defer.html");
+    try testing.htmlRunner("html/script/import.html");
+    try testing.htmlRunner("html/script/dynamic_import.html");
 }
 
 test "Browser: HTML.HtmlSlotElement" {

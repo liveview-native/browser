@@ -17,7 +17,6 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
-const URL = @import("../../url.zig").URL;
 const Page = @import("../../browser/page.zig").Page;
 const Notification = @import("../../notification.zig").Notification;
 const log = @import("../../log.zig");
@@ -124,8 +123,8 @@ fn createIsolatedWorld(cmd: anytype) !void {
 
     const world = try bc.createIsolatedWorld(params.worldName, params.grantUniveralAccess);
     const page = bc.session.currentPage() orelse return error.PageNotLoaded;
-    try pageCreated(bc, page);
-    const js_context = &world.executor.js_context.?;
+    try world.createContextAndLoadPolyfills(bc.arena, page);
+    const js_context = &world.executor.context.?;
 
     // Create the auxdata json for the contextCreated event
     // Calling contextCreated will assign a Id to the context and send the contextCreated event
@@ -179,7 +178,7 @@ pub fn pageNavigate(arena: Allocator, bc: anytype, event: *const Notification.Pa
     var cdp = bc.cdp;
     const reason_: ?[]const u8 = switch (event.opts.reason) {
         .anchor => "anchorClick",
-        .script => "scriptInitiated",
+        .script, .history => "scriptInitiated",
         .form => switch (event.opts.method) {
             .GET => "formSubmissionGet",
             .POST => "formSubmissionPost",
@@ -256,18 +255,18 @@ pub fn pageNavigate(arena: Allocator, bc: anytype, event: *const Notification.Pa
         const page = bc.session.currentPage() orelse return error.PageNotLoaded;
         const aux_data = try std.fmt.allocPrint(arena, "{{\"isDefault\":true,\"type\":\"default\",\"frameId\":\"{s}\"}}", .{target_id});
         bc.inspector.contextCreated(
-            page.main_context,
+            page.js,
             "",
             try page.origin(arena),
             aux_data,
             true,
         );
     }
-    if (bc.isolated_world) |*isolated_world| {
+    for (bc.isolated_worlds.items) |*isolated_world| {
         const aux_json = try std.fmt.allocPrint(arena, "{{\"isDefault\":false,\"type\":\"isolated\",\"frameId\":\"{s}\"}}", .{target_id});
         // Calling contextCreated will assign a new Id to the context and send the contextCreated event
         bc.inspector.contextCreated(
-            &isolated_world.executor.js_context.?,
+            &isolated_world.executor.context.?,
             isolated_world.name,
             "://",
             aux_json,
@@ -278,18 +277,14 @@ pub fn pageNavigate(arena: Allocator, bc: anytype, event: *const Notification.Pa
 
 pub fn pageRemove(bc: anytype) !void {
     // The main page is going to be removed, we need to remove contexts from other worlds first.
-    if (bc.isolated_world) |*isolated_world| {
+    for (bc.isolated_worlds.items) |*isolated_world| {
         try isolated_world.removeContext();
     }
 }
 
 pub fn pageCreated(bc: anytype, page: *Page) !void {
-    if (bc.isolated_world) |*isolated_world| {
-        // We need to recreate the isolated world context
-        try isolated_world.createContext(page);
-
-        const polyfill = @import("../../browser/polyfill/polyfill.zig");
-        try polyfill.preload(bc.arena, &isolated_world.executor.js_context.?);
+    for (bc.isolated_worlds.items) |*isolated_world| {
+        try isolated_world.createContextAndLoadPolyfills(bc.arena, page);
     }
 }
 
@@ -463,7 +458,7 @@ fn autoEnableDOMMonitoring(bc: anytype, page: anytype) !void {
             const parent_node_cdp = try self.bc.node_registry.register(parent_node);
 
             // Find the previous sibling and register it if it exists
-            const previous_sibling = try parser.nodePreviousSibling(inserted_node);
+            const previous_sibling = parser.nodePreviousSibling(inserted_node);
             const previous_node_cdp = if (previous_sibling) |prev| try self.bc.node_registry.register(prev) else null;
 
             // Send CDP DOM.childNodeInserted event
@@ -519,7 +514,7 @@ fn autoEnableDOMMonitoring(bc: anytype, page: anytype) !void {
         }
 
         fn _handle(self: *Self, event: *parser.Event) !void {
-            const event_type_str = try parser.eventType(event);
+            const event_type_str = parser.eventType(event);
             const tags = comptime std.meta.tags(EventType);
             inline for (tags) |tag| {
                 if (std.mem.eql(u8, event_type_str, @tagName(tag))) {

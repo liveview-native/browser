@@ -21,7 +21,6 @@ const log = @import("../../log.zig");
 
 const parser = @import("../netsurf.zig");
 const Event = @import("event.zig").Event;
-const JsObject = @import("../env.zig").JsObject;
 
 // TODO: We currently don't have a UIEvent interface so we skip it in the prototype chain.
 // https://developer.mozilla.org/en-US/docs/Web/API/UIEvent
@@ -55,8 +54,8 @@ pub const MouseEvent = struct {
     pub fn constructor(event_type: []const u8, opts_: ?MouseEventInit) !*parser.MouseEvent {
         const opts = opts_ orelse MouseEventInit{};
 
-        var mouse_event = try parser.mouseEventCreate();
-        parser.eventSetInternalType(@ptrCast(&mouse_event), .mouse_event);
+        const mouse_event = try parser.mouseEventCreate();
+        parser.eventSetInternalType(@ptrCast(mouse_event), .mouse_event);
 
         try parser.mouseEventInit(mouse_event, event_type, .{
             .x = opts.clientX,
@@ -69,7 +68,7 @@ pub const MouseEvent = struct {
         });
 
         if (!std.mem.eql(u8, event_type, "click")) {
-            log.warn(.mouse_event, "unsupported mouse event", .{ .event = event_type });
+            log.warn(.browser, "unsupported mouse event", .{ .event = event_type });
         }
 
         return mouse_event;

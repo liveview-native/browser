@@ -23,7 +23,6 @@ const Allocator = std.mem.Allocator;
 
 const Dump = @import("dump.zig");
 const State = @import("State.zig");
-const Env = @import("env.zig").Env;
 const Mime = @import("mime.zig").Mime;
 const Session = @import("session.zig").Session;
 const Renderer = @import("renderer.zig").Renderer;
@@ -32,8 +31,10 @@ const Walker = @import("dom/walker.zig").WalkerDepthFirst;
 const Scheduler = @import("Scheduler.zig");
 const Http = @import("../http/Http.zig");
 const ScriptManager = @import("ScriptManager.zig");
+const SlotChangeMonitor = @import("SlotChangeMonitor.zig");
 const HTMLDocument = @import("html/document.zig").HTMLDocument;
 
+const js = @import("js/js.zig");
 const URL = @import("../url.zig").URL;
 
 const log = @import("../log.zig");
@@ -73,7 +74,7 @@ pub const Page = struct {
 
     // Our JavaScript context for this specific page. This is what we use to
     // execute any JavaScript
-    main_context: *Env.JsContext,
+    js: *js.Context,
 
     // indicates intention to navigate to another page on the next loop execution.
     delayed_navigation: bool = false,
@@ -89,6 +90,10 @@ pub const Page = struct {
     mode: Mode,
 
     load_state: LoadState = .parsing,
+
+    // expensive, adds a a global MutationObserver, so we only do it if there's
+    // an "slotchange" event registered
+    slot_change_monitor: ?*SlotChangeMonitor = null,
 
     notified_network_idle: IdleNotification = .init,
     notified_network_almost_idle: IdleNotification = .init,
@@ -118,7 +123,7 @@ pub const Page = struct {
         complete,
     };
 
-    pub fn init(self: *Page, arena: Allocator, session: *Session) !void {
+    pub fn init(self: *Page, arena: Allocator, call_arena: Allocator, session: *Session) !void {
         const browser = session.browser;
         const script_manager = ScriptManager.init(browser, self);
 
@@ -128,7 +133,7 @@ pub const Page = struct {
             .window = try Window.create(null, null),
             .arena = arena,
             .session = session,
-            .call_arena = undefined,
+            .call_arena = call_arena,
             .renderer = Renderer.init(arena),
             .state_pool = &browser.state_pool,
             .cookie_jar = &session.cookie_jar,
@@ -137,11 +142,11 @@ pub const Page = struct {
             .scheduler = Scheduler.init(arena),
             .keydown_event_node = .{ .func = keydownCallback },
             .window_clicked_event_node = .{ .func = windowClicked },
-            .main_context = undefined,
+            .js = undefined,
         };
 
-        self.main_context = try session.executor.createJsContext(&self.window, self, self, true, Env.GlobalMissingCallback.init(&self.polyfill_loader));
-        try polyfill.preload(self.arena, self.main_context);
+        self.js = try session.executor.createContext(self, true, js.GlobalMissingCallback.init(&self.polyfill_loader));
+        try polyfill.preload(self.arena, self.js);
 
         try self.scheduler.add(self, runMicrotasks, 5, .{ .name = "page.microtasks" });
         // message loop must run only non-test env
@@ -183,7 +188,7 @@ pub const Page = struct {
         // set to include element shadowroots in the dump
         page: ?*const Page = null,
         with_base: bool = false,
-        exclude_scripts: bool = false,
+        strip_mode: Dump.Opts.StripMode = .{},
     };
 
     // dump writes the page content into the given file.
@@ -200,12 +205,12 @@ pub const Page = struct {
                 // returns the <pre> element from the HTML
                 const doc = parser.documentHTMLToDocument(self.window.document);
                 const list = try parser.documentGetElementsByTagName(doc, "pre");
-                const pre = try parser.nodeListItem(list, 0) orelse return error.InvalidHTML;
+                const pre = parser.nodeListItem(list, 0) orelse return error.InvalidHTML;
                 const walker = Walker{};
                 var next: ?*parser.Node = null;
                 while (true) {
                     next = try walker.get_next(pre, next) orelse break;
-                    const v = try parser.nodeTextContent(next.?) orelse return;
+                    const v = parser.nodeTextContent(next.?) orelse return;
                     try out.writeAll(v);
                 }
                 return;
@@ -230,7 +235,7 @@ pub const Page = struct {
 
         try Dump.writeHTML(doc, .{
             .page = opts.page,
-            .exclude_scripts = opts.exclude_scripts,
+            .strip_mode = opts.strip_mode,
         }, out);
     }
 
@@ -243,18 +248,13 @@ pub const Page = struct {
 
         // find <head> tag
         const list = try parser.documentGetElementsByTagName(doc, "head");
-        const head = try parser.nodeListItem(list, 0) orelse return;
+        const head = parser.nodeListItem(list, 0) orelse return;
 
         const base = try parser.documentCreateElement(doc, "base");
         try parser.elementSetAttribute(base, "href", self.url.raw);
 
         const Node = @import("dom/node.zig").Node;
         try Node.prepend(head, &[_]Node.NodeOrText{.{ .node = parser.elementToNode(base) }});
-    }
-
-    pub fn fetchModuleSource(ctx: *anyopaque, src: [:0]const u8) !ScriptManager.BlockingResult {
-        const self: *Page = @ptrCast(@alignCast(ctx));
-        return self.script_manager.blockingGet(src);
     }
 
     pub fn wait(self: *Page, wait_ms: i32) Session.WaitResult {
@@ -278,8 +278,8 @@ pub const Page = struct {
         var timer = try std.time.Timer.start();
         var ms_remaining = wait_ms;
 
-        var try_catch: Env.TryCatch = undefined;
-        try_catch.init(self.main_context);
+        var try_catch: js.TryCatch = undefined;
+        try_catch.init(self.js);
         defer try_catch.deinit();
 
         var scheduler = &self.scheduler;
@@ -314,6 +314,12 @@ pub const Page = struct {
                     // mode with an extra socket. Either way, we're waiting
                     // for http traffic
                     if (try http_client.tick(ms_remaining) == .extra_socket) {
+                        // exit_when_done is explicitly set when there isn't
+                        // an extra socket, so it should not be possibl to
+                        // get an extra_socket message when exit_when_done
+                        // is true.
+                        std.debug.assert(exit_when_done == false);
+
                         // data on a socket we aren't handling, return to caller
                         return .extra_socket;
                     }
@@ -349,11 +355,7 @@ pub const Page = struct {
                         std.debug.assert(http_client.intercepted == 0);
 
                         const ms = ms_to_next_task orelse blk: {
-                            // TODO: when jsRunner is fully replaced with the
-                            // htmlRunner, we can remove the first part of this
-                            // condition. jsRunner calls `page.wait` far too
-                            // often to enforce this.
-                            if (wait_ms > 100 and wait_ms - ms_remaining < 100) {
+                            if (wait_ms - ms_remaining < 100) {
                                 // Look, we want to exit ASAP, but we don't want
                                 // to exit so fast that we've run none of the
                                 // background jobs.
@@ -553,7 +555,7 @@ pub const Page = struct {
         const owned_url = try self.arena.dupeZ(u8, request_url);
         self.url = try URL.parse(owned_url, null);
 
-        var headers = try Http.Headers.init();
+        var headers = try self.http_client.newHeaders();
         if (opts.header) |hdr| try headers.add(hdr);
         try self.requestCookie(.{ .is_navigation = true }).headersForRequest(self.arena, owned_url, &headers);
 
@@ -635,7 +637,7 @@ pub const Page = struct {
         try HTMLDocument.documentIsComplete(self.window.document, self);
 
         // Dump DOM tree after page is complete
-        self.dumpDOMTree();
+        // self.dumpDOMTree();
 
         // dispatch window.load event
         const loadevt = try parser.eventCreate();
@@ -731,7 +733,7 @@ pub const Page = struct {
         var self: *Page = @ptrCast(@alignCast(ctx));
 
         // Dump raw content before processing
-        self.dumpRawContent();
+        // self.dumpRawContent();
 
         self.clearTransferArena();
 
@@ -797,7 +799,7 @@ pub const Page = struct {
                         // ignore non-js script.
                         continue;
                     }
-                    try self.script_manager.addFromElement(@ptrCast(node));
+                    try self.script_manager.addFromElement(@ptrCast(node), "page");
                 }
 
                 self.script_manager.staticScriptsDone();
@@ -813,6 +815,9 @@ pub const Page = struct {
                 unreachable;
             },
         }
+
+        // Push the navigation after a successful load.
+        try self.session.history.pushNavigation(self.url.raw, self);
     }
 
     fn pageErrorCallback(ctx: *anyopaque, err: anyerror) void {
@@ -1094,9 +1099,9 @@ pub const Page = struct {
         try self.navigateFromWebAPI(action, opts);
     }
 
-    pub fn isNodeAttached(self: *const Page, node: *parser.Node) !bool {
+    pub fn isNodeAttached(self: *const Page, node: *parser.Node) bool {
         const root = parser.documentToNode(parser.documentHTMLToDocument(self.window.document));
-        return root == try parser.nodeGetRootNode(node);
+        return root == parser.nodeGetRootNode(node);
     }
 
     fn elementSubmitForm(self: *Page, element: *parser.Element) !void {
@@ -1125,78 +1130,21 @@ pub const Page = struct {
 
     pub fn stackTrace(self: *Page) !?[]const u8 {
         if (comptime builtin.mode == .Debug) {
-            return self.main_context.stackTrace();
+            return self.js.stackTrace();
         }
         return null;
     }
 
-    fn dumpDOMTree(self: *const Page) void {
-        const doc = parser.documentHTMLToDocument(self.window.document);
-
-        // Use an allocating writer like in the tests
-        var aw = std.Io.Writer.Allocating.init(self.arena);
-        defer aw.deinit();
-
-        Dump.writeHTML(doc, .{}, &aw.writer) catch |err| {
-            std.debug.print("Failed to dump DOM tree: {}\n", .{err});
+    pub fn registerSlotChangeMonitor(self: *Page) !void {
+        if (self.slot_change_monitor != null) {
             return;
-        };
-
-        const html_content = aw.written();
-        std.debug.print("=== DOM Tree Dump ===\n{s}\n=== End DOM Tree ===\n", .{html_content});
+        }
+        self.slot_change_monitor = try SlotChangeMonitor.init(self);
     }
 
-    fn dumpRawContent(self: *const Page) void {
-        std.debug.print("=== Raw Content Dump ===\n", .{});
-        std.debug.print("URL: {s}\n", .{self.url.raw});
-
-        switch (self.mode) {
-            .pre => {
-                std.debug.print("Content: [No body received]\n", .{});
-            },
-            .raw => |buf| {
-                std.debug.print("Content Type: Raw binary/unknown\n", .{});
-                std.debug.print("Content Length: {d} bytes\n", .{buf.items.len});
-                // Only show first 1000 chars to avoid overwhelming output
-                const preview_len = @min(buf.items.len, 1000);
-                std.debug.print("Content Preview: {s}", .{buf.items[0..preview_len]});
-                if (buf.items.len > 1000) {
-                    std.debug.print("... [truncated, total {d} bytes]", .{buf.items.len});
-                }
-                std.debug.print("\n", .{});
-            },
-            .text => {
-                std.debug.print("Content Type: Text (wrapped in HTML)\n", .{});
-                // The text mode wraps content in <pre> tags, we'll see the final result in DOM dump
-                std.debug.print("Content: [Text content wrapped in HTML structure]\n", .{});
-            },
-            .html => {
-                std.debug.print("Content Type: HTML\n", .{});
-                std.debug.print("Content: [HTML content - see DOM dump for parsed structure]\n", .{});
-            },
-            .parsed => {
-                std.debug.print("Content Type: HTML (parsed)\n", .{});
-                std.debug.print("Content: [Parsed HTML - see DOM dump for structure]\n", .{});
-            },
-            .xml => {
-                std.debug.print("Content Type: XML\n", .{});
-                std.debug.print("Content: [XML content - see DOM dump for parsed structure]\n", .{});
-            },
-            .raw_done => |data| {
-                std.debug.print("Content Type: Raw (completed)\n", .{});
-                std.debug.print("Content Length: {d} bytes\n", .{data.len});
-                const preview_len = @min(data.len, 1000);
-                std.debug.print("Content Preview: {s}", .{data[0..preview_len]});
-                if (data.len > 1000) {
-                    std.debug.print("... [truncated, total {d} bytes]", .{data.len});
-                }
-                std.debug.print("\n", .{});
-            },
-            .err => |err| {
-                std.debug.print("Content: [Error: {}]\n", .{err});
-            },
-        }
-        std.debug.print("=== End Raw Content ===\n", .{});
+    pub fn isSameOrigin(self: *const Page, url: []const u8) !bool {
+        const current_origin = try self.origin(self.call_arena);
+        return std.mem.startsWith(u8, url, current_origin);
     }
 };
 
@@ -1205,6 +1153,7 @@ pub const NavigateReason = enum {
     address_bar,
     form,
     script,
+    history,
 };
 
 pub const NavigateOpts = struct {
@@ -1315,7 +1264,7 @@ pub export fn scriptAddedCallback(ctx: ?*anyopaque, element: ?*parser.Element) c
     // here, else the script_manager will flag it as already-processed.
     _ = parser.elementGetAttribute(element.?, "src") catch return orelse return;
 
-    self.script_manager.addFromElement(element.?) catch |err| {
+    self.script_manager.addFromElement(element.?, "dynamic") catch |err| {
         log.warn(.browser, "dynamic script", .{ .err = err });
     };
 }
