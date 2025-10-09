@@ -24,6 +24,7 @@ const c = @cImport({
     @cInclude("dom/bindings/hubbub/parser.h");
     @cInclude("events/event_target.h");
     @cInclude("events/event.h");
+    @cInclude("events/ui_event.h");
     @cInclude("events/mouse_event.h");
     @cInclude("events/keyboard_event.h");
     @cInclude("utils/validate.h");
@@ -562,6 +563,7 @@ pub const EventType = enum(u8) {
     composition_event = 10,
     navigation_current_entry_change_event = 11,
     page_transition_event = 12,
+    ui_event = 13,
 };
 
 pub const MutationEvent = c.dom_mutation_event;
@@ -911,6 +913,48 @@ pub const EventTargetTBase = extern struct {
     }
 };
 
+// UIEvent
+
+pub const AbstractView = c.dom_abstract_view;
+
+pub const UIEvent = c.dom_ui_event;
+
+pub fn uiEventCreate() !*UIEvent {
+    var evt: ?*UIEvent = null;
+    const err = c._dom_ui_event_create(&evt);
+    try DOMErr(err);
+    return evt.?;
+}
+
+pub fn uiEventDestroy(evt: *UIEvent) void {
+    c._dom_ui_event_destroy(evt);
+}
+
+const UIEventOpts = struct {
+    bubbles: bool = false,
+    cancelable: bool = false,
+
+    view: ?*AbstractView = null,
+    detail: i32 = 0,
+};
+
+pub fn uiEventInit(evt: *UIEvent, typ: []const u8, opts: UIEventOpts) !void {
+    const s = try strFromData(typ);
+    const err = c._dom_ui_event_init(
+        evt,
+        s,
+        opts.bubbles,
+        opts.cancelable,
+        opts.view, // dom_abstract_view* ?
+        opts.detail // detail
+    );
+    try DOMErr(err);
+}
+
+pub fn uiEventDefaultPrevented(evt: *UIEvent) !bool {
+    return eventDefaultPrevented(@ptrCast(evt));
+}
+
 // MouseEvent
 
 pub const MouseEvent = c.dom_mouse_event;
@@ -937,6 +981,7 @@ const MouseEventOpts = struct {
     meta: bool = false,
     button: u16 = 0,
     click_count: u16 = 1,
+    view: ?*EventTarget = null,
 };
 
 pub fn mouseEventInit(evt: *MouseEvent, typ: []const u8, opts: MouseEventOpts) !void {
@@ -946,7 +991,7 @@ pub fn mouseEventInit(evt: *MouseEvent, typ: []const u8, opts: MouseEventOpts) !
         s,
         opts.bubbles,
         opts.cancelable,
-        null, // dom_abstract_view* ?
+        @ptrCast(@alignCast(opts.view)), // dom_abstract_view* ?
         opts.click_count, // details
         opts.x, // screen_x
         opts.y, // screen_y
