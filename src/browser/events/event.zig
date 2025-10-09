@@ -30,6 +30,7 @@ const EventTarget = @import("../dom/event_target.zig").EventTarget;
 const EventTargetUnion = @import("../dom/event_target.zig").Union;
 const AbortSignal = @import("../html/AbortController.zig").AbortSignal;
 
+const UIEvent = @import("ui_event.zig").UIEvent;
 const CustomEvent = @import("custom_event.zig").CustomEvent;
 const ProgressEvent = @import("../xhr/progress_event.zig").ProgressEvent;
 const MouseEvent = @import("mouse_event.zig").MouseEvent;
@@ -41,6 +42,7 @@ const PopStateEvent = @import("../html/History.zig").PopStateEvent;
 // Event interfaces
 pub const Interfaces = .{
     Event,
+    UIEvent,
     CustomEvent,
     ProgressEvent,
     MouseEvent,
@@ -76,6 +78,7 @@ pub const Event = struct {
             .message_event => .{ .MessageEvent = @as(*MessageEvent, @ptrCast(evt)).* },
             .keyboard_event => .{ .KeyboardEvent = @as(*parser.KeyboardEvent, @ptrCast(evt)) },
             .pop_state => .{ .PopStateEvent = @as(*PopStateEvent, @ptrCast(evt)).* },
+            .ui_event => .{ .UIEvent = @as(*parser.UIEvent, @ptrCast(evt)) },
         };
     }
 
