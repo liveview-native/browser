@@ -461,7 +461,7 @@ fn requestChildNodes(cmd: anytype) !void {
 
     if (params.depth == 0) return error.InvalidParams;
     const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
-    const session_id = bc.session_id orelse return error.SessionIdNotLoaded;
+    // const session_id = bc.session_id orelse return error.SessionIdNotLoaded;
     const node = bc.node_registry.lookup_by_id.get(params.nodeId) orelse {
         return error.InvalidNode;
     };
@@ -470,7 +470,7 @@ fn requestChildNodes(cmd: anytype) !void {
         .parentId = node.id,
         .nodes = bc.nodeWriter(node, .{ .depth = params.depth, .exclude_root = true }),
     }, .{
-        .session_id = session_id,
+        // .session_id = session_id, // Chrome sends requestChildNodes on no session
     });
 
     return cmd.sendResult(null, .{});

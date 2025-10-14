@@ -149,15 +149,16 @@ pub fn createContext(self: *ExecutionWorld, page: *Page, enter: bool, global_cal
     }
     errdefer if (enter) handle_scope.?.deinit();
 
-    {
-        // If we want to overwrite the built-in console, we have to
-        // delete the built-in one.
-        const js_obj = v8_context.getGlobal();
-        const console_key = v8.String.initUtf8(isolate, "console");
-        if (js_obj.deleteValue(v8_context, console_key) == false) {
-            return error.ConsoleDeleteError;
-        }
-    }
+    // we get better CDP results using v8's Console
+    // {
+    //     // If we want to overwrite the built-in console, we have to
+    //     // delete the built-in one.
+    //     const js_obj = v8_context.getGlobal();
+    //     const console_key = v8.String.initUtf8(isolate, "console");
+    //     if (js_obj.deleteValue(v8_context, console_key) == false) {
+    //         return error.ConsoleDeleteError;
+    //     }
+    // }
     const context_id = env.context_id;
     env.context_id = context_id + 1;
 

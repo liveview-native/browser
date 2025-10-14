@@ -90,6 +90,31 @@ pub fn CDPT(comptime TypeProvider: type) type {
             };
         }
 
+        pub fn initWithBrowser(browser: *Browser, client: TypeProvider.Client) !Self {
+            const allocator = browser.app.allocator;
+            
+            var self = Self{
+                .client = client,
+                .browser = browser.*,
+                .allocator = allocator,
+                .browser_context = null,
+                .message_arena = std.heap.ArenaAllocator.init(allocator),
+                .notification_arena = std.heap.ArenaAllocator.init(allocator),
+            };
+            
+            const id = self.browser_context_id_gen.next();
+
+            self.browser_context = @as(BrowserContext(Self), undefined);
+            const browser_context = &self.browser_context.?;
+
+            if (browser.session != null) {
+                try BrowserContext(Self).initWithSession(browser_context, id, &self, &browser.session.?);
+            } else {
+                try BrowserContext(Self).init(browser_context, id, &self);
+            }
+            return self;
+        }
+
         pub fn deinit(self: *Self) void {
             if (self.browser_context) |*bc| {
                 bc.deinit();
@@ -392,6 +417,45 @@ pub fn BrowserContext(comptime CDP_T: type) type {
             try cdp.browser.notification.register(.page_navigated, self, onPageNavigated);
         }
 
+        fn initWithSession(self: *Self, id: []const u8, cdp: *CDP_T, session: *Session) !void {
+            const allocator = cdp.allocator;
+
+            const arena = session.arena;
+
+            const inspector = try cdp.browser.env.newInspector(arena, self);
+
+            var registry = Node.Registry.init(allocator);
+            errdefer registry.deinit();
+
+            self.* = .{
+                .id = id,
+                .cdp = cdp,
+                .arena = arena,
+                .target_id = null,
+                .session_id = null,
+                .session = session,
+                .security_origin = URL_BASE,
+                .secure_context_type = "Secure", // TODO = enum
+                .loader_id = LOADER_ID,
+                .page_life_cycle_events = false, // TODO; Target based value
+                .node_registry = registry,
+                .node_search_list = undefined,
+                .isolated_worlds = .empty,
+                .inspector = inspector,
+                .notification_arena = cdp.notification_arena.allocator(),
+                .intercept_state = try InterceptState.init(allocator),
+                .captured_responses = .empty,
+                .log_interceptor = LogInterceptor(Self).init(allocator, self),
+            };
+            self.node_search_list = Node.Search.List.init(allocator, &self.node_registry);
+            errdefer self.deinit();
+
+            try cdp.browser.notification.register(.page_remove, self, onPageRemove);
+            try cdp.browser.notification.register(.page_created, self, onPageCreated);
+            try cdp.browser.notification.register(.page_navigate, self, onPageNavigate);
+            try cdp.browser.notification.register(.page_navigated, self, onPageNavigated);
+        }
+
         pub fn deinit(self: *Self) void {
             // safe to call even if never registered
             log.unregisterInterceptor();
@@ -612,6 +676,7 @@ pub fn BrowserContext(comptime CDP_T: type) type {
         }
 
         pub fn onInspectorEvent(ctx: *anyopaque, msg: []const u8) void {
+            std.log.info("=== RUNTIME INSPECTOR EVENT {s}", .{msg});
             if (log.enabled(.cdp, .debug)) {
                 // msg should be {"method":<method>,...
                 std.debug.assert(std.mem.startsWith(u8, msg, "{\"method\":"));
