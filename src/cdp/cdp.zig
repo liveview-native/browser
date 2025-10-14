@@ -124,6 +124,10 @@ pub fn CDPT(comptime TypeProvider: type) type {
             self.notification_arena.deinit();
         }
 
+        pub fn setFocusedNode(self: *Self, node_id: ?u32) void {
+            self.client.setFocusedNode(node_id);
+        }
+
         pub fn handleMessage(self: *Self, msg: []const u8) bool {
             // if there's an error, it's already been logged
             self.processMessage(msg) catch return false;
