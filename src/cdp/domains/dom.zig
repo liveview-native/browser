@@ -442,6 +442,8 @@ fn getBoxModel(cmd: anytype) !void {
     const rect = try Element._getBoundingClientRect(element, page);
     const quad = rectToQuad(rect);
 
+    cmd.cdp.setFocusedNode(params.nodeId);
+
     return cmd.sendResult(.{ .model = BoxModel{
         .content = quad,
         .padding = quad,

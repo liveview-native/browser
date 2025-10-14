@@ -74,6 +74,7 @@ export fn lightpanda_page_navigate(page_ptr: *anyopaque, url: [*:0]const u8) voi
 }
 
 const NativeClientHandler = *const fn (ctx: *anyopaque, message: [*:0]const u8) callconv(.c) void;
+const NativeClientFocusedNodeHandler = *const fn (ctx: *anyopaque, node_id: c_int) callconv(.c) void;
 
 const NativeClient = struct {
     allocator: std.mem.Allocator,
@@ -81,6 +82,7 @@ const NativeClient = struct {
     // sent: std.ArrayListUnmanaged(std.json.Value) = .{},
     // serialized: std.ArrayListUnmanaged([]const u8) = .{},
     handler: NativeClientHandler,
+    focused_node_handler: NativeClientFocusedNodeHandler,
     ctx: *anyopaque,
 
     // devtools server
@@ -102,8 +104,8 @@ const NativeClient = struct {
         }
     };
 
-    fn init(alloc: std.mem.Allocator, handler: NativeClientHandler, ctx: *anyopaque) NativeClient {
-        return .{ .allocator = alloc, .send_arena = std.heap.ArenaAllocator.init(alloc), .handler = handler, .ctx = ctx };
+    fn init(alloc: std.mem.Allocator, handler: NativeClientHandler, focused_node_handler: NativeClientFocusedNodeHandler, ctx: *anyopaque) NativeClient {
+        return .{ .allocator = alloc, .send_arena = std.heap.ArenaAllocator.init(alloc), .handler = handler, .focused_node_handler = focused_node_handler, .ctx = ctx };
     }
 
     pub fn sendJSON(self: *NativeClient, message: anytype, opts: std.json.Stringify.Options) !void {
@@ -137,17 +139,23 @@ const NativeClient = struct {
             try devtools.socket.writeMessage(msg, .text);
         }
     }
+
+    pub fn setFocusedNode(self: *NativeClient, node_id: ?u32) void {
+        if (node_id) |id| {
+            self.focused_node_handler(self.ctx, @intCast(id));
+        }
+    }
 };
 
 const CDP = CDPT(struct {
     pub const Client = *NativeClient;
 });
 
-export fn lightpanda_cdp_init(app_ptr: *anyopaque, handler: NativeClientHandler, ctx: *anyopaque) ?*anyopaque {
+export fn lightpanda_cdp_init(app_ptr: *anyopaque, handler: NativeClientHandler, focused_node_handler: NativeClientFocusedNodeHandler, ctx: *anyopaque) ?*anyopaque {
     const app: *App = @ptrCast(@alignCast(app_ptr));
 
     const client = app.allocator.create(NativeClient) catch return null;
-    client.* = NativeClient.init(app.allocator, handler, ctx);
+    client.* = NativeClient.init(app.allocator, handler, focused_node_handler, ctx);
 
     const cdp = app.allocator.create(CDP) catch return null;
     cdp.* = CDP.init(app, client) catch return null;
