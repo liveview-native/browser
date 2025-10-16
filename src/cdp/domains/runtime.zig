@@ -30,9 +30,10 @@ pub fn processMessage(cmd: anytype) !void {
         getProperties,
     }, cmd.input.action) orelse return error.UnknownMethod;
 
-    switch (action) {
-        .runIfWaitingForDebugger => return cmd.sendResult(null, .{}),
-        else => return sendInspector(cmd, action),
+    if (std.mem.eql(u8, cmd.input.action, "runIfWaitingForDebugger")) {
+        return cmd.sendResult(null, .{});
+    } else {
+        return sendInspector(cmd, action);
     }
 }
 

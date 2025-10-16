@@ -77,10 +77,17 @@ script_pool: std.heap.MemoryPool(Script),
 // buffer from doneCallback
 imported_modules: std.StringHashMapUnmanaged(?error{Failed}!std.ArrayList(u8)),
 
+<<<<<<< HEAD
 // Mapping between module specifier and resolution.
 // see https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap
 // importmap contains resolved urls.
 importmap: std.StringHashMapUnmanaged([:0]const u8),
+=======
+resources: std.ArrayList(Resource) = .empty,
+resource_content: std.StringHashMap([]const u8),
+
+const OrderList = std.DoublyLinkedList;
+>>>>>>> 002c5e1f (working v8 debugger)
 
 pub fn init(browser: *Browser, page: *Page) ScriptManager {
     // page isn't fully initialized, we can setup our reference, but that's it.
@@ -98,7 +105,14 @@ pub fn init(browser: *Browser, page: *Page) ScriptManager {
         .client = browser.http_client,
         .static_scripts_done = false,
         .buffer_pool = BufferPool.init(allocator, 5),
+<<<<<<< HEAD
         .script_pool = std.heap.MemoryPool(Script).init(allocator),
+=======
+        .script_pool = std.heap.MemoryPool(PendingScript).init(allocator),
+        .sync_module_pool = std.heap.MemoryPool(SyncModule).init(allocator),
+        .async_module_pool = std.heap.MemoryPool(AsyncModule).init(allocator),
+        .resource_content = std.StringHashMap([]const u8).init(allocator),
+>>>>>>> 002c5e1f (working v8 debugger)
     };
 }
 
@@ -638,6 +652,19 @@ const Script = struct {
 
     fn doneCallback(ctx: *anyopaque) !void {
         const self: *Script = @ptrCast(@alignCast(ctx));
+        
+        log.debug(.http, "script fetch complete", .{ .req = self.script.url });
+
+        const manager = self.manager;
+        
+        manager.resource_content.put(self.script.url, self.script.source.content()) catch {};
+        manager.resources.append(manager.allocator, Resource{
+            .url = self.script.url,
+            .type = "Script",
+            .mimeType = "text/javascript",
+            .contentSize = self.script.source.content().len
+        }) catch {};
+
         self.complete = true;
         log.debug(.http, "script fetch complete", .{ .req = self.url });
 
@@ -905,4 +932,11 @@ pub const ModuleSource = struct {
     pub fn src(self: *const ModuleSource) []const u8 {
         return self.buffer.items;
     }
+};
+
+pub const Resource = struct {
+    url: []const u8,
+    type: []const u8,
+    mimeType: []const u8,
+    contentSize: ?usize
 };

@@ -45,7 +45,7 @@ pub const Scope = enum {
 
 const Opts = struct {
     format: Format = if (is_debug) .pretty else .logfmt,
-    level: Level = if (is_debug) .info else .info,
+    level: Level = if (is_debug) .debug else .debug,
     filter_scopes: []const Scope = &.{},
 };
 
