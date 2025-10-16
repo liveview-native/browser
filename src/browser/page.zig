@@ -557,6 +557,12 @@ pub const Page = struct {
 
         var headers = try self.http_client.newHeaders();
         if (opts.header) |hdr| try headers.add(hdr);
+
+        // add the LVN accept headers for page navigation.  This may not be the best
+        // place to inject accept headers.  It might be better to do it via the CDP
+        // mechanism (which is in domains/page.zig)
+        try headers.add(try @import("../lvn/accept_extension.zig").get_lvn_accept_header());
+
         try self.requestCookie(.{ .is_navigation = true }).headersForRequest(self.arena, owned_url, &headers);
 
         // We dispatch page_navigate event before sending the request.

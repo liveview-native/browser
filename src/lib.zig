@@ -6,6 +6,7 @@ const Page = @import("browser/page.zig").Page;
 const Scheduler = @import("browser/Scheduler.zig");
 const CDPT = @import("cdp/cdp.zig").CDPT;
 const BrowserContext = @import("cdp/cdp.zig").BrowserContext;
+const accept_extension = @import("lvn/accept_extension.zig");
 
 export fn lightpanda_app_init() ?*anyopaque {
     @import("log.zig").opts.level = .warn;
@@ -192,3 +193,5 @@ export fn lightpanda_browser_context_session(browser_context_ptr: *anyopaque) *a
     const browser_context: *BrowserContext(CDP) = @ptrCast(@alignCast(browser_context_ptr));
     return browser_context.session;
 }
+
+export const set_lvn_accept = accept_extension.set_lvn_accept;
