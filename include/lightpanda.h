@@ -25,5 +25,8 @@ int lightpanda_cdp_page_wait(void* cdp_ptr, int ms);
 void* lightpanda_browser_context_session(void* browser_context_ptr);
 
 void lightpanda_devtools_init(void* cdp_ptr);
+#include <CoreFoundation/CoreFoundation.h>
+
+int set_lvn_accept(CFDictionaryRef);
 
 #endif
