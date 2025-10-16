@@ -41,6 +41,8 @@ pub fn processMessage(cmd: anytype) !void {
         getBoxModel,
         requestChildNodes,
         getFrameOwner,
+        setNodeValue,
+        setAttributesAsText,
     }, cmd.input.action) orelse return error.UnknownMethod;
 
     switch (action) {
@@ -58,6 +60,8 @@ pub fn processMessage(cmd: anytype) !void {
         .getBoxModel => return getBoxModel(cmd),
         .requestChildNodes => return requestChildNodes(cmd),
         .getFrameOwner => return getFrameOwner(cmd),
+        .setNodeValue => return setNodeValue(cmd),
+        .setAttributesAsText => return setAttributesAsText(cmd),
     }
 }
 
@@ -442,8 +446,6 @@ fn getBoxModel(cmd: anytype) !void {
     const rect = try Element._getBoundingClientRect(element, page);
     const quad = rectToQuad(rect);
 
-    cmd.cdp.setFocusedNode(params.nodeId);
-
     return cmd.sendResult(.{ .model = BoxModel{
         .content = quad,
         .padding = quad,
@@ -494,6 +496,71 @@ fn getFrameOwner(cmd: anytype) !void {
 
     const node = try bc.node_registry.register(parser.documentToNode(doc));
     return cmd.sendResult(.{ .nodeId = node.id, .backendNodeId = node.id }, .{});
+}
+
+fn setNodeValue(cmd: anytype) !void {
+    const params = (try cmd.params(struct {
+        nodeId: Node.Id,
+        value: [] u8,
+    })) orelse return error.InvalidParams;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const node: *Node = bc.node_registry.lookup_by_id.get(params.nodeId) orelse {
+        return error.InvalidNode;
+    };
+
+    try @import("../../browser/dom/node.zig").Node.set_nodeValue(node._node, params.value);
+
+    return cmd.sendResult(null, .{});
+}
+
+fn setAttributesAsText(cmd: anytype) !void {
+    const params = (try cmd.params(struct {
+        nodeId: Node.Id,
+        text: []const u8,
+        name: ?[]const u8,
+    })) orelse return error.InvalidParams;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const node: *Node = bc.node_registry.lookup_by_id.get(params.nodeId) orelse {
+        return error.InvalidNode;
+    };
+
+    var dom_parser = try parser.Parser.init("utf-8");
+    defer dom_parser.deinit();
+    try dom_parser.process("<tag ");
+    try dom_parser.process(params.text);
+    try dom_parser.process(">");
+    const parsed_doc: *parser.Node = parser.documentHTMLToNode(dom_parser.html_doc);
+
+    if (params.name) |name| {
+        if (std.mem.trim(u8, name, " \t\r\n").len > 0) {
+            const attribute = try parser.elementGetAttribute(parser.nodeToElement(parsed_doc), name);
+            if (attribute) |value| {
+                try parser.elementSetAttribute(parser.nodeToElement(node._node), name, value);
+            } else {
+                try parser.elementRemoveAttribute(parser.nodeToElement(node._node), name);
+            }
+            return;
+        }
+    }
+
+    const attributes: ?*parser.NamedNodeMap = try parser.nodeGetAttributes(parsed_doc);
+
+    for (0..try parser.namedNodeMapGetLength(attributes.?)) |i| {
+        const attribute: ?*parser.Attribute = try parser.namedNodeMapItem(attributes.?, @intCast(i));
+        if (try parser.attributeGetValue(attribute.?)) |value| {
+            try parser.elementSetAttribute(
+                parser.nodeToElement(node._node),
+                try parser.attributeGetName(attribute.?),
+                value
+            );
+        } else {
+            try parser.elementRemoveAttribute(parser.nodeToElement(node._node), try parser.attributeGetName(attribute.?));
+        }
+    }
+
+    return cmd.sendResult(null, .{});
 }
 
 const testing = @import("../testing.zig");

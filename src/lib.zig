@@ -140,9 +140,11 @@ const NativeClient = struct {
         }
     }
 
-    pub fn setFocusedNode(self: *NativeClient, node_id: ?u32) void {
+    pub fn setHighlightedNode(self: *NativeClient, node_id: ?u32) void {
         if (node_id) |id| {
             self.focused_node_handler(self.ctx, @intCast(id));
+        } else {
+            self.focused_node_handler(self.ctx, -1);
         }
     }
 };

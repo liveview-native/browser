@@ -124,8 +124,8 @@ pub fn CDPT(comptime TypeProvider: type) type {
             self.notification_arena.deinit();
         }
 
-        pub fn setFocusedNode(self: *Self, node_id: ?u32) void {
-            self.client.setFocusedNode(node_id);
+        pub fn setHighlightedNode(self: *Self, node_id: ?u32) void {
+            self.client.setHighlightedNode(node_id);
         }
 
         pub fn handleMessage(self: *Self, msg: []const u8) bool {
@@ -244,6 +244,7 @@ pub fn CDPT(comptime TypeProvider: type) type {
                     asUint(u56, "Runtime") => return @import("domains/runtime.zig").processMessage(command),
                     asUint(u56, "Network") => return @import("domains/network.zig").processMessage(command),
                     asUint(u56, "Storage") => return @import("domains/storage.zig").processMessage(command),
+                    asUint(u56, "Overlay") => return @import("domains/overlay.zig").processMessage(command),
                     else => {},
                 },
                 8 => switch (@as(u64, @bitCast(domain[0..8].*))) {
