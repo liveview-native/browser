@@ -70,6 +70,9 @@ async_module_pool: std.heap.MemoryPool(AsyncModule),
 // and can be requested as needed.
 sync_modules: std.StringHashMapUnmanaged(*SyncModule),
 
+resources: std.ArrayList(Resource) = .empty,
+resource_content: std.StringHashMap([]const u8),
+
 const OrderList = std.DoublyLinkedList;
 
 pub fn init(browser: *Browser, page: *Page) ScriptManager {
@@ -89,6 +92,7 @@ pub fn init(browser: *Browser, page: *Page) ScriptManager {
         .script_pool = std.heap.MemoryPool(PendingScript).init(allocator),
         .sync_module_pool = std.heap.MemoryPool(SyncModule).init(allocator),
         .async_module_pool = std.heap.MemoryPool(AsyncModule).init(allocator),
+        .resource_content = std.StringHashMap([]const u8).init(allocator),
     };
 }
 
@@ -528,6 +532,15 @@ pub const PendingScript = struct {
         log.debug(.http, "script fetch complete", .{ .req = self.script.url });
 
         const manager = self.manager;
+        
+        manager.resource_content.put(self.script.url, self.script.source.content()) catch {};
+        manager.resources.append(manager.allocator, Resource{
+            .url = self.script.url,
+            .type = "Script",
+            .mimeType = "text/javascript",
+            .contentSize = self.script.source.content().len
+        }) catch {};
+
         self.complete = true;
         if (!self.script.is_async) {
             manager.evaluate();
@@ -939,4 +952,11 @@ pub const GetResult = struct {
     pub fn src(self: *const GetResult) []const u8 {
         return self.buffer.items;
     }
+};
+
+pub const Resource = struct {
+    url: []const u8,
+    type: []const u8,
+    mimeType: []const u8,
+    contentSize: ?usize
 };

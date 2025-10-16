@@ -14,6 +14,15 @@ isolate: v8.Isolate,
 inner: *v8.Inspector,
 session: v8.InspectorSession,
 
+call_targets: std.AutoHashMap(u32, CallTarget),
+
+allocator: Allocator,
+
+const CallTarget = struct {
+    session_id: ?[]const u8,
+    target_id: ?[]const u8,
+};
+
 // We expect allocator to be an arena
 pub fn init(allocator: Allocator, isolate: v8.Isolate, ctx: anytype) !Inspector {
     const ContextT = @TypeOf(ctx);
@@ -28,13 +37,20 @@ pub fn init(allocator: Allocator, isolate: v8.Isolate, ctx: anytype) !Inspector 
     // If necessary, turn a void context into something we can safely ptrCast
     const safe_context: *anyopaque = if (ContextT == void) @ptrCast(@constCast(&{})) else ctx;
 
-    const channel = v8.InspectorChannel.init(safe_context, InspectorContainer.onInspectorResponse, InspectorContainer.onInspectorEvent, isolate);
+    const channel = v8.InspectorChannel.init(
+        safe_context,
+        InspectorContainer.onInspectorResponse,
+        InspectorContainer.onInspectorEvent,
+        InspectorContainer.onRunMessageLoopOnPause,
+        InspectorContainer.onQuitMessageLoopOnPause,
+        isolate
+    );
 
     const client = v8.InspectorClient.init();
 
     const inner = try allocator.create(v8.Inspector);
     v8.Inspector.init(inner, client, channel, isolate);
-    return .{ .inner = inner, .isolate = isolate, .session = inner.connect() };
+    return .{ .inner = inner, .isolate = isolate, .session = inner.connect(), .allocator = allocator, .call_targets = .init(allocator) };
 }
 
 pub fn deinit(self: *const Inspector) void {
@@ -42,7 +58,7 @@ pub fn deinit(self: *const Inspector) void {
     self.inner.deinit();
 }
 
-pub fn send(self: *const Inspector, msg: []const u8) void {
+pub fn send(self: *Inspector, msg: []const u8) void {
     // Can't assume the main Context exists (with its HandleScope)
     // available when doing this. Pages (and thus the HandleScope)
     // comes and goes, but CDP can keep sending messages.
@@ -50,6 +66,23 @@ pub fn send(self: *const Inspector, msg: []const u8) void {
     var temp_scope: v8.HandleScope = undefined;
     v8.HandleScope.init(&temp_scope, isolate);
     defer temp_scope.deinit();
+
+    std.log.info("Inspector.send: {s}", .{msg});
+    const msg_meta = std.json.parseFromSlice(struct {
+        sessionId: ?[]const u8 = null,
+        targetId: ?[]const u8 = null,
+        id: ?u32 = null
+    }, self.allocator, msg, .{ .ignore_unknown_fields = true }) catch |err| {
+        std.log.err("{}", .{err});
+        @panic("invalid msg to Inspector");
+    };
+    defer msg_meta.deinit();
+    if (msg_meta.value.id) |id| {
+        self.call_targets.put(id, .{
+            .session_id = msg_meta.value.sessionId,
+            .target_id = msg_meta.value.targetId,
+        }) catch @panic("failed to put call target in inspector");
+    }
 
     self.session.dispatchProtocolMessage(isolate, msg);
 }
@@ -109,6 +142,8 @@ pub fn getNodePtr(self: *const Inspector, allocator: Allocator, object_id: []con
 const NoopInspector = struct {
     pub fn onInspectorResponse(_: *anyopaque, _: u32, _: []const u8) void {}
     pub fn onInspectorEvent(_: *anyopaque, _: []const u8) void {}
+    pub fn onRunMessageLoopOnPause(_: *anyopaque, _: u32) void {}
+    pub fn onQuitMessageLoopOnPause(_: *anyopaque) void {}
 };
 
 pub fn getTaggedAnyOpaque(value: v8.Value) ?*js.TaggedAnyOpaque {

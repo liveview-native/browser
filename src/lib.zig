@@ -7,6 +7,8 @@ const Scheduler = @import("browser/Scheduler.zig");
 const CDPT = @import("cdp/cdp.zig").CDPT;
 const BrowserContext = @import("cdp/cdp.zig").BrowserContext;
 
+const Server = @import("devtools/Server.zig");
+
 export fn lightpanda_app_init() ?*anyopaque {
     @import("log.zig").opts.level = .warn;
     const allocator = std.heap.c_allocator;
@@ -93,25 +95,34 @@ const NativeClient = struct {
     conn_reader: ?std.net.Stream.Reader = null,
     conn_writer: ?std.net.Stream.Writer = null,
 
+    cdp: *CDP,
+
     const DevTools = struct {
-        socket: std.http.Server.WebSocket,
+        socket: Server.WebSocket,
         allocator: std.mem.Allocator,
+        sent_initial_events: bool = false,
 
         pub fn sendJSON(self: *DevTools, message: anytype) !void {
             const msg = try std.json.Stringify.valueAlloc(self.allocator, message, .{});
             std.log.info("devtools sending -- {s}", .{msg});
-            try self.socket.writeMessage(msg, .text);
+            try self.socket.writeFrame(msg, .text);
+            // try writeLargeMessage(&self.socket, msg, .text, 64 * 1024);
         }
     };
 
-    fn init(alloc: std.mem.Allocator, handler: NativeClientHandler, focused_node_handler: NativeClientFocusedNodeHandler, ctx: *anyopaque) NativeClient {
-        return .{ .allocator = alloc, .send_arena = std.heap.ArenaAllocator.init(alloc), .handler = handler, .focused_node_handler = focused_node_handler, .ctx = ctx };
+    fn init(alloc: std.mem.Allocator, handler: NativeClientHandler, focused_node_handler: NativeClientFocusedNodeHandler, cdp: *CDP, ctx: *anyopaque) NativeClient {
+        return .{ .allocator = alloc, .send_arena = std.heap.ArenaAllocator.init(alloc), .handler = handler, .focused_node_handler = focused_node_handler, .ctx = ctx, .cdp = cdp };
     }
 
     pub fn sendJSON(self: *NativeClient, message: anytype, opts: std.json.Stringify.Options) !void {
         var opts_copy = opts;
         opts_copy.whitespace = .minified;
         const serialized = try std.json.Stringify.valueAlloc(self.allocator, message, opts_copy);
+
+        // var parsed: std.json.Parsed(std.json.Value) = try std.json.parseFromSlice(std.json.Value, self.allocator, tmp_serialized, .{});
+        // _ = parsed.value.object.swapRemove("sessionId"); // we're going to remove all sessionIds.
+
+        // const serialized = try std.json.Stringify.valueAlloc(self.allocator, parsed.value, opts_copy);
 
         const slice = try self.allocator.dupeZ(u8, serialized);
         defer self.allocator.free(slice);
@@ -124,8 +135,17 @@ const NativeClient = struct {
         }
     }
 
-    pub fn sendJSONRaw(self: *NativeClient, buf: std.ArrayListUnmanaged(u8)) !void {
-        const msg = buf.items[10..]; // CDP adds 10 0s for a WebSocket header.
+    pub fn sendJSONRaw(self: *NativeClient, msg: []const u8) !void {
+        // const msg = buf.items[10..]; // CDP adds 10 0s for a WebSocket header.
+        // const slice = try self.allocator.dupeZ(u8, msg);
+        // defer self.allocator.free(slice);
+        // self.handler(self.ctx, slice.ptr);
+
+        // var parsed: std.json.Parsed(std.json.Value) = try std.json.parseFromSlice(std.json.Value, self.allocator, orig_msg, .{});
+        // _ = parsed.value.object.swapRemove("sessionId"); // we're going to remove all sessionIds.
+
+        // const msg = try std.json.Stringify.valueAlloc(self.allocator, parsed.value, .{ .emit_null_optional_fields = true });
+
         const slice = try self.allocator.dupeZ(u8, msg);
         defer self.allocator.free(slice);
         self.handler(self.ctx, slice.ptr);
@@ -135,8 +155,9 @@ const NativeClient = struct {
         // So this message might be for the client, or for the devtools.
         // Forward it to the devtools to be safe.
         if (self.devtools) |*devtools| {
-            std.log.info("devtools sending raw -- {s}", .{msg});
-            try devtools.socket.writeMessage(msg, .text);
+            // std.log.info("devtools sending raw -- {s}", .{msg});
+            try devtools.socket.writeFrame(msg, .text);
+            // try writeLargeMessage(&devtools.socket, msg, .text, 64 * 1024);
         }
     }
 
@@ -147,6 +168,37 @@ const NativeClient = struct {
             self.focused_node_handler(self.ctx, -1);
         }
     }
+
+    pub fn runMessageLoopOnPause(self: *NativeClient) void {
+        run_message_loop(self.cdp, self);
+    }
+
+    fn writeLargeMessage(ws: *Server.WebSocket, data: []const u8, op: Server.WebSocket.Opcode, chunk_size: usize) !void {
+        var offset: usize = 0;
+        var is_first = true;
+
+        while (offset < data.len) {
+            const remaining = data.len - offset;
+            const chunk_len = @min(chunk_size, remaining);
+            const chunk = data[offset .. offset + chunk_len];
+            
+            const is_final = (offset + chunk_len) >= data.len;
+            
+            // First frame uses the actual opcode (text/binary)
+            // Subsequent frames use continuation opcode
+            const frame_opcode = if (is_first) op else .continuation;
+            
+            var bufs: [1][]const u8 = .{chunk};
+            try ws.writeHeaderFrameVecUnflushed(&bufs, frame_opcode, is_final);
+            try ws.writeBodyVecUnflushed(&bufs);
+            try ws.flush();
+            
+            offset += chunk_len;
+            is_first = false;
+        }
+        
+        try ws.flush();
+    }
 };
 
 const CDP = CDPT(struct {
@@ -155,11 +207,12 @@ const CDP = CDPT(struct {
 
 export fn lightpanda_cdp_init(app_ptr: *anyopaque, handler: NativeClientHandler, focused_node_handler: NativeClientFocusedNodeHandler, ctx: *anyopaque) ?*anyopaque {
     const app: *App = @ptrCast(@alignCast(app_ptr));
+    
+    const cdp = app.allocator.create(CDP) catch return null;
 
     const client = app.allocator.create(NativeClient) catch return null;
-    client.* = NativeClient.init(app.allocator, handler, focused_node_handler, ctx);
+    client.* = NativeClient.init(app.allocator, handler, focused_node_handler, cdp, ctx);
 
-    const cdp = app.allocator.create(CDP) catch return null;
     cdp.* = CDP.init(app, client) catch return null;
 
     return cdp;
@@ -207,33 +260,37 @@ export fn lightpanda_cdp_browser_context(cdp_ptr: *anyopaque) *anyopaque {
 // milliseconds until next scheduled task
 export fn lightpanda_cdp_page_wait(cdp_ptr: *anyopaque, ms: i32) c_int {
     const cdp: *CDP = @ptrCast(@alignCast(cdp_ptr));
-    _ = cdp.pageWait(ms);
+    
+    const client: *NativeClient = cdp.client;
+
+    if (!cdp.is_paused) {
+        _ = cdp.pageWait(ms);
+    }
 
     // it's okay to panic if the session or page don't exist.
     const scheduler = &cdp.browser.session.?.page.?.scheduler;
     const delay = cdp_peek_next_delay_ms(scheduler) orelse -1;
 
-    const client: *NativeClient = cdp.client;
+    run_message_loop(cdp, client);
 
+    return delay;
+}
+
+fn run_message_loop(cdp: *CDP, client: *NativeClient) void {
     if (client.devtools) |*devtools| {
-        // const aux_data = std.fmt.allocPrint(cdp.allocator, "{{\"isDefault\":true,\"type\":\"default\",\"frameId\":\"{s}\"}}", .{
-        //     cdp.browser_context.?.target_id.?
-        // }) catch return delay;
-        // cdp.browser_context.?.inspector.contextCreated(
-        //     cdp.browser_context.?.session.page.?.js,
-        //     "",
-        //     cdp.browser_context.?.session.page.?.origin(cdp.allocator) catch return delay,
-        //     aux_data,
-        //     true
-        // );
-
-        const message = devtools.socket.readSmallMessage() catch return delay;
+        const message = devtools.socket.readMessage() catch return;
         switch (message.opcode) {
             .text => {
                 const arena = &cdp.message_arena;
                 defer _ = arena.reset(.{ .retain_with_limit = 1024 * 16 });
-                cdp.dispatch(arena.allocator(), devtools, message.data) catch return delay;
-                if (std.mem.endsWith(u8, message.data, "\"method\":\"Target.setAutoAttach\",\"params\":{\"autoAttach\":true,\"waitForDebuggerOnStart\":true,\"flatten\":true}}")) {
+                cdp.dispatch(arena.allocator(), devtools, message.data) catch return;
+
+                // if (std.mem.endsWith(u8, message.data, "\"method\":\"Runtime.enable\",\"params\":{}}")) {
+                // if (!devtools.sent_initial_events and std.mem.endsWith(u8, message.data, "\"method\":\"Target.setAutoAttach\",\"params\":{\"autoAttach\":true,\"waitForDebuggerOnStart\":true,\"flatten\":true}}")) {
+                // if (!devtools.sent_initial_events and std.mem.endsWith(u8, message.data, "\"method\":\"Runtime.enable\",\"params\":{}}")) {
+                if (!devtools.sent_initial_events and std.mem.endsWith(u8, message.data, "\"method\":\"Page.enable\",\"params\":{}}")) {
+                    // if (!devtools.sent_initial_events) {
+                    // this is a hack, but we somehow need to get these 2 events to the devtools to start the session properly.
                     devtools.sendJSON(.{
                         .method = "Target.attachedToTarget",
                         .params = .{
@@ -244,18 +301,22 @@ export fn lightpanda_cdp_page_wait(cdp_ptr: *anyopaque, ms: i32) c_int {
                                 .title = "Title",
                                 .url = cdp.browser_context.?.session.page.?.url.raw,
                                 .attached = true,
-                                .canAccessOpener = true,
+                                .canAccessOpener = false,
                                 .browserContextId = cdp.browser_context.?.id,
                             },
-                            .waitForDebugger = false,
+                            .waitingForDebugger = true,
                         }
-                    }) catch return delay;
+                    }) catch @panic("failed to send attach message");
+                    devtools.sent_initial_events = true;
+                }
+
+                if (std.mem.endsWith(u8, message.data, "\"method\":\"Runtime.enable\",\"params\":{}}")) {
                     devtools.sendJSON(.{
                         .method = "Runtime.executionContextCreated",
                         .params = .{
                             .context = .{
                                 .id = cdp.browser_context.?.session.page.?.js.v8_context.debugContextId(),
-                                .origin = cdp.browser_context.?.session.page.?.origin(cdp.allocator) catch return delay,
+                                .origin = cdp.browser_context.?.session.page.?.origin(cdp.allocator) catch return,
                                 .name = "",
                                 // .uniqueId = <we can't get the unique ID from v8 yet, but this is experimental anyways>
                                 .auxData = .{
@@ -265,11 +326,12 @@ export fn lightpanda_cdp_page_wait(cdp_ptr: *anyopaque, ms: i32) c_int {
                                 }
                             }
                         },
-                        .sessionId = cdp.browser_context.?.session_id.?
-                    }) catch return delay;
+                        .sessionId = cdp.browser_context.?.session_id.?,
+                        .targetId = cdp.browser_context.?.target_id.?
+                    }) catch @panic("failed to send execution context message");
                 }
             },
-            else => return delay,
+            else => return,
         }
         std.log.info("{} -- {s}", .{message.opcode, message.data});
         
@@ -288,12 +350,12 @@ export fn lightpanda_cdp_page_wait(cdp_ptr: *anyopaque, ms: i32) c_int {
         // }
     } else if (client.listener) |*listener| {
         // if we get a basic http request, respond to it in this run loop.
-        const conn = listener.accept() catch return delay;
+        const conn = listener.accept() catch return;
         client.conn_reader = conn.stream.reader(&client.recv_buffer);
         client.conn_writer = conn.stream.writer(&client.send_buffer);
-        var server = std.http.Server.init(client.conn_reader.?.interface(), &client.conn_writer.?.interface);
+        var server = Server.init(client.conn_reader.?.interface(), &client.conn_writer.?.interface);
         
-        var req = server.receiveHead() catch return delay;
+        var req = server.receiveHead() catch return;
 
         std.log.info("{s}", .{req.head.target});
 
@@ -303,62 +365,63 @@ export fn lightpanda_cdp_page_wait(cdp_ptr: *anyopaque, ms: i32) c_int {
 
             var stringify = std.json.Stringify{ .writer = &writer.writer };
 
-            stringify.beginObject() catch return delay;
-            stringify.objectField("Browser") catch return delay;
-            stringify.write("Chrome/72.0.3601.0") catch return delay;
-            stringify.objectField("Protocol-Version") catch return delay;
-            stringify.write("1.3") catch return delay;
-            stringify.objectField("User-Agent") catch return delay;
-            stringify.write("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3601.0 Safari/537.36") catch return delay;
-            stringify.objectField("V8-Version") catch return delay;
-            stringify.write("7.2.233") catch return delay;
-            stringify.objectField("WebKit-Version") catch return delay;
-            stringify.write("537.36 (@cfede9db1d154de0468cb0538479f34c0755a0f4)") catch return delay;
-            stringify.objectField("webSocketDebuggerUrl") catch return delay;
-            stringify.write("ws://localhost:9222/devtools/browser/0") catch return delay;
-            stringify.endObject() catch return delay;
+            stringify.beginObject() catch return;
+            stringify.objectField("Browser") catch return;
+            stringify.write("Chrome/72.0.3601.0") catch return;
+            stringify.objectField("Protocol-Version") catch return;
+            stringify.write("1.3") catch return;
+            stringify.objectField("User-Agent") catch return;
+            stringify.write("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3601.0 Safari/537.36") catch return;
+            stringify.objectField("V8-Version") catch return;
+            stringify.write("7.2.233") catch return;
+            stringify.objectField("WebKit-Version") catch return;
+            stringify.write("537.36 (@cfede9db1d154de0468cb0538479f34c0755a0f4)") catch return;
+            stringify.objectField("webSocketDebuggerUrl") catch return;
+            stringify.write("ws://localhost:9222/devtools/browser/0") catch return;
+            stringify.endObject() catch return;
 
-            const json = writer.toOwnedSlice() catch return delay;
+            const json = writer.toOwnedSlice() catch return;
 
-            req.respond(json, .{}) catch return delay;
-            return delay;
+            req.respond(json, .{}) catch return;
+            return;
         }
 
         if (std.mem.startsWith(u8, req.head.target, "/json/list")) {
             const list = std.json.Stringify.valueAlloc(client.allocator, .{
                 .{
                     .description = "",
-                    .devtoolsFrontendUrl = "/devtools/inspector.html?ws=localhost:9222/devtools/page/0",
-                    .id = "0",
+                    .devtoolsFrontendUrl = std.fmt.allocPrint(client.allocator, "/devtools/inspector.html?ws=localhost:9222/devtools/page/{s}", .{cdp.browser_context.?.target_id.?}) catch @panic("failed to construct webSocketDebuggerUrl"),
+                    .id = cdp.browser_context.?.target_id.?,
                     .title = "Page",
                     .type = "page",
                     .url = cdp.browser.session.?.page.?.url.raw,
-                    .webSocketDebuggerUrl = "ws://localhost:9222/devtools/page/0"
+                    .webSocketDebuggerUrl = std.fmt.allocPrint(client.allocator, "ws://localhost:9222/devtools/page/{s}", .{cdp.browser_context.?.target_id.?}) catch @panic("failed to construct webSocketDebuggerUrl")
                 }
-            }, .{}) catch return delay;
-            req.respond(list, .{}) catch return delay;
-            return delay;
+            }, .{}) catch return;
+            req.respond(list, .{}) catch return;
+            return;
         }
 
         // open websocket connection
-        if (std.mem.eql(u8, req.head.target, "/devtools/page/0")) {
+        if (
+            std.mem.startsWith(u8, req.head.target, "/devtools/page/")
+                and std.mem.endsWith(u8, req.head.target, cdp.browser_context.?.target_id.?)
+        ) {
             switch (req.upgradeRequested()) {
                 .websocket => |key| {
                     std.log.info("connecting websocket for page 0 with key {s}", .{ key orelse "" });
                     client.devtools = NativeClient.DevTools{
-                        .socket = req.respondWebSocket(.{.key = key orelse ""}) catch return delay,
+                        .socket = req.respondWebSocket(.{.key = key orelse "", .allocator = cdp.allocator}) catch return,
                         .allocator = client.allocator,
                     };
-                    client.devtools.?.socket.flush() catch return delay;
+                    client.devtools.?.socket.flush() catch return;
 
-                    return delay;
+                    return;
                 },
-                else => return delay,
+                else => return,
             }
         }
     }
-
-    return delay;
 }
 
 fn cdp_peek_next_delay_ms(scheduler: *Scheduler) ?i32 {

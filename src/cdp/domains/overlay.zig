@@ -5,19 +5,21 @@ pub fn processMessage(cmd: anytype) !void {
     const action = std.meta.stringToEnum(enum {
         enable,
         hideHighlight,
-        highlightNode
+        highlightNode,
+        setPausedInDebuggerMessage
     }, cmd.input.action) orelse return error.UnknownMethod;
 
     switch (action) {
         .enable => return cmd.sendResult(null, .{}),
         .hideHighlight => return hideHighlight(cmd),
         .highlightNode => return highlightNode(cmd),
+        .setPausedInDebuggerMessage => return cmd.sendResult(null, .{}),
     }
 }
 
 fn hideHighlight(cmd: anytype) !void {
     cmd.cdp.setHighlightedNode(null);
-    
+
     return cmd.sendResult(null, .{});
 }
 

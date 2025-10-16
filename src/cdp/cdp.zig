@@ -73,6 +73,9 @@ pub fn CDPT(comptime TypeProvider: type) type {
         // Used for processing notifications within a browser context.
         notification_arena: std.heap.ArenaAllocator,
 
+        // debugger
+        is_paused: bool = false,
+
         const Self = @This();
 
         pub fn init(app: *App, client: TypeProvider.Client) !Self {
@@ -249,6 +252,7 @@ pub fn CDPT(comptime TypeProvider: type) type {
                 },
                 8 => switch (@as(u64, @bitCast(domain[0..8].*))) {
                     asUint(u64, "Security") => return @import("domains/security.zig").processMessage(command),
+                    asUint(u64, "Debugger") => return @import("domains/debugger.zig").processMessage(command),
                     else => {},
                 },
                 9 => switch (@as(u72, @bitCast(domain[0..9].*))) {
@@ -668,14 +672,14 @@ pub fn BrowserContext(comptime CDP_T: type) type {
             defer _ = self.cdp.notification_arena.reset(.{ .retain_with_limit = 1024 * 64 });
         }
 
-        pub fn callInspector(self: *const Self, msg: []const u8) void {
+        pub fn callInspector(self: *Self, msg: []const u8) void {
             self.inspector.send(msg);
             // force running micro tasks after send input to the inspector.
-            self.cdp.browser.runMicrotasks();
+            // self.cdp.browser.runMicrotasks(); // disabling this to try and fix debugger
         }
 
-        pub fn onInspectorResponse(ctx: *anyopaque, _: u32, msg: []const u8) void {
-            sendInspectorMessage(@ptrCast(@alignCast(ctx)), msg) catch |err| {
+        pub fn onInspectorResponse(ctx: *anyopaque, call_id: u32, msg: []const u8) void {
+            sendInspectorMessage(@ptrCast(@alignCast(ctx)), call_id, msg) catch |err| {
                 log.err(.cdp, "send inspector response", .{ .err = err });
             };
         }
@@ -693,47 +697,78 @@ pub fn BrowserContext(comptime CDP_T: type) type {
                 log.debug(.cdp, "inspector event", .{ .method = method });
             }
 
-            sendInspectorMessage(@ptrCast(@alignCast(ctx)), msg) catch |err| {
+            sendInspectorMessage(@ptrCast(@alignCast(ctx)), null, msg) catch |err| {
                 log.err(.cdp, "send inspector event", .{ .err = err });
             };
+        }
+
+        // debugger events
+        pub fn onRunMessageLoopOnPause(ctx: *anyopaque, _: u32) void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            self.cdp.is_paused = true;
+            while (self.cdp.is_paused) {
+                self.cdp.client.runMessageLoopOnPause();
+            }
+        }
+
+        pub fn onQuitMessageLoopOnPause(ctx: *anyopaque) void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            self.cdp.is_paused = false;
         }
 
         // This is hacky x 2. First, we create the JSON payload by gluing our
         // session_id onto it. Second, we're much more client/websocket aware than
         // we should be.
-        fn sendInspectorMessage(self: *Self, msg: []const u8) !void {
-            const session_id = self.session_id orelse {
-                // We no longer have an active session. What should we do
-                // in this case?
-                return;
-            };
-
+        fn sendInspectorMessage(self: *Self, call_id: ?u32, msg: []const u8) !void {
             const cdp = self.cdp;
             const allocator = cdp.client.send_arena.allocator();
 
-            const field = ",\"sessionId\":\"";
+            var msg_json: std.json.Parsed(std.json.Value) = std.json.parseFromSlice(std.json.Value, allocator, msg, .{}) catch @panic(try std.fmt.allocPrint(allocator, "failed to decode msg: {s}", .{ msg }));
+            if (call_id) |id| {
+                const call_target = self.inspector.call_targets.get(id).?;
+                if (call_target.session_id) |session_id| {
+                    try msg_json.value.object.put("sessionId", .{ .string = session_id });
+                }
+                if (call_target.target_id) |target_id| {
+                    try msg_json.value.object.put("targetId", .{ .string = target_id });
+                }
+            } else if (!msg_json.value.object.contains("id")) {
+                // this is an event, not a call
+                // we'll always inject the session and target for events, otherwise they'll never have them.
+                // FIXME: there must be a better way to know which session/target these should go to.
+                // can we give this info to v8?
+                try msg_json.value.object.put("sessionId", .{ .string = self.session_id.? });
+                try msg_json.value.object.put("targetId", .{ .string = self.target_id.? });
+            }
 
-            // + 1 for the closing quote after the session id
-            // + 10 for the max websocket header
-            const message_len = msg.len + session_id.len + 1 + field.len + 10;
 
-            var buf: std.ArrayListUnmanaged(u8) = .{};
-            buf.ensureTotalCapacity(allocator, message_len) catch |err| {
-                log.err(.cdp, "inspector buffer", .{ .err = err });
-                return;
-            };
+            const new_msg = try std.json.Stringify.valueAlloc(self.arena, msg_json.value, .{ .emit_null_optional_fields = false });
+            try cdp.client.sendJSONRaw(new_msg);
 
-            // reserve 10 bytes for websocket header
-            buf.appendSliceAssumeCapacity(&.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
 
-            // -1  because we dont' want the closing brace '}'
-            buf.appendSliceAssumeCapacity(msg[0 .. msg.len - 1]);
-            buf.appendSliceAssumeCapacity(field);
-            buf.appendSliceAssumeCapacity(session_id);
-            buf.appendSliceAssumeCapacity("\"}");
-            std.debug.assert(buf.items.len == message_len);
+            // const field = ",\"sessionId\":\"";
 
-            try cdp.client.sendJSONRaw(buf);
+            // // + 1 for the closing quote after the session id
+            // // + 10 for the max websocket header
+            // const message_len = msg.len + session_id.len + 1 + field.len + 10;
+
+            // var buf: std.ArrayListUnmanaged(u8) = .{};
+            // buf.ensureTotalCapacity(allocator, message_len) catch |err| {
+            //     log.err(.cdp, "inspector buffer", .{ .err = err });
+            //     return;
+            // };
+
+            // // reserve 10 bytes for websocket header
+            // buf.appendSliceAssumeCapacity(&.{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
+
+            // // -1  because we dont' want the closing brace '}'
+            // buf.appendSliceAssumeCapacity(msg[0 .. msg.len - 1]);
+            // buf.appendSliceAssumeCapacity(field);
+            // buf.appendSliceAssumeCapacity(session_id);
+            // buf.appendSliceAssumeCapacity("\"}");
+            // std.debug.assert(buf.items.len == message_len);
+
+            // try cdp.client.sendJSONRaw(buf);
         }
     };
 }

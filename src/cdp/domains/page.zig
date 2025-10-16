@@ -33,6 +33,8 @@ pub fn processMessage(cmd: anytype) !void {
         createIsolatedWorld,
         navigate,
         stopLoading,
+        getResourceContent,
+        getResourceTree
     }, cmd.input.action) orelse return error.UnknownMethod;
 
     switch (action) {
@@ -43,6 +45,8 @@ pub fn processMessage(cmd: anytype) !void {
         .createIsolatedWorld => return createIsolatedWorld(cmd),
         .navigate => return navigate(cmd),
         .stopLoading => return cmd.sendResult(null, .{}),
+        .getResourceContent => return getResourceContent(cmd),
+        .getResourceTree => return getResourceTree(cmd),
     }
 }
 
@@ -542,6 +546,45 @@ fn autoEnableDOMMonitoring(bc: anytype, page: anytype) !void {
     inline for (std.meta.tags(EventType)) |tag| {
         _ = try parser.eventTargetAddEventListener(event_target, @tagName(tag), event_node, true);
     }
+}
+
+fn getResourceContent(cmd: anytype) !void {
+    const params = (try cmd.params(struct {
+        frameId: []const u8,
+        url: []const u8,
+    })) orelse return error.InvalidParams;
+
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+
+    if (std.mem.eql(u8, params.url, bc.getURL().?)) {
+        return cmd.sendResult(.{
+            .content = bc.session.page.?.resource_content.items,
+            .base64Encoded = false
+        }, .{});
+    } else {
+        return cmd.sendResult(.{
+            .content = bc.session.page.?.script_manager.resource_content.get(params.url).?,
+            .base64Encoded = false
+        }, .{});
+    }
+}
+
+fn getResourceTree(cmd: anytype) !void {
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const target_id = bc.target_id orelse return error.TargetNotLoaded;
+
+    return cmd.sendResult(.{
+        .frameTree = .{
+            .frame = Frame{
+                .id = target_id,
+                .loaderId = bc.loader_id,
+                .securityOrigin = bc.security_origin,
+                .url = bc.getURL() orelse "about:blank",
+                .secureContextType = bc.secure_context_type,
+            },
+            .resources = bc.session.page.?.script_manager.resources.items
+        },
+    }, .{});
 }
 
 const testing = @import("../testing.zig");

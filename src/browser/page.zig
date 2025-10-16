@@ -99,6 +99,8 @@ pub const Page = struct {
     notified_network_almost_idle: IdleNotification = .init,
     auto_enable_dom_monitoring: bool = false,
 
+    resource_content: std.ArrayList(u8) = .empty,
+
     const Mode = union(enum) {
         pre: void,
         err: anyerror,
@@ -698,6 +700,8 @@ pub const Page = struct {
                 else => .{ .raw = .{} },
             };
         }
+
+        try self.resource_content.appendSlice(self.arena, data);
 
         switch (self.mode) {
             .html => |*p| try p.process(data),
