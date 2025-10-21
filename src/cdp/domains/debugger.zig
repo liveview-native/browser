@@ -5,6 +5,10 @@ pub fn processMessage(cmd: anytype) !void {
 }
 
 fn sendInspector(cmd: anytype) !void {
+    if (cmd.input.session_id == null) {
+        return cmd.sendResult(null, .{});
+    }
+
     const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
 
     // the result to return is handled directly by the inspector.
