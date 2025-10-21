@@ -679,7 +679,7 @@ pub fn BrowserContext(comptime CDP_T: type) type {
         pub fn callInspector(self: *Self, msg: []const u8) void {
             self.inspector.send(msg);
             // force running micro tasks after send input to the inspector.
-            // self.cdp.browser.runMicrotasks(); // disabling this to try and fix debugger
+            self.cdp.browser.runMicrotasks(); // disabling this to try and fix debugger
         }
 
         pub fn onInspectorResponse(ctx: *anyopaque, call_id: u32, msg: []const u8) void {
