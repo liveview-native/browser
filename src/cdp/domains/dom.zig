@@ -537,27 +537,32 @@ fn setAttributesAsText(cmd: anytype) !void {
         return error.InvalidNode;
     };
 
-    var dom_parser = try parser.Parser.init("utf-8");
-    defer dom_parser.deinit();
-    try dom_parser.process("<tag ");
-    try dom_parser.process(params.text);
-    try dom_parser.process(">");
-    const parsed_doc: *parser.Node = parser.documentHTMLToNode(dom_parser.html_doc);
+    const alloc = cmd.arena;
+    const fragment_text = try std.fmt.allocPrint(alloc, "<vml><head></head><body><div {s}></div></body></vml>", .{ params.text });
+    defer alloc.free(fragment_text);
+
+    const fragment = try parser.documentHTMLParseFromStr(fragment_text);
+    const fragment_node = parser.documentHTMLToNode(fragment);
+
+    const html = parser.nodeFirstChild(fragment_node) orelse return cmd.sendResult(null, .{});
+    const head = parser.nodeFirstChild(html) orelse return cmd.sendResult(null, .{});
+    const body = parser.nodeNextSibling(head) orelse return cmd.sendResult(null, .{});
+    const parsed_node = parser.nodeFirstChild(body) orelse return cmd.sendResult(null, .{});
 
     if (params.name) |name| {
-        if (std.mem.trim(u8, name, " \t\r\n").len > 0) {
-            const attribute = try parser.elementGetAttribute(parser.nodeToElement(parsed_doc), name);
+        const trimmed_name = std.mem.trim(u8, name, " \t\r\n");
+        if (trimmed_name.len > 0) {
+            const attribute = try parser.elementGetAttribute(parser.nodeToElement(parsed_node), trimmed_name);
             if (attribute) |value| {
-                try parser.elementSetAttribute(parser.nodeToElement(node._node), name, value);
+                try parser.elementSetAttribute(parser.nodeToElement(node._node), trimmed_name, value);
             } else {
-                try parser.elementRemoveAttribute(parser.nodeToElement(node._node), name);
+                try parser.elementRemoveAttribute(parser.nodeToElement(node._node), trimmed_name);
             }
-            return;
+            return cmd.sendResult(null, .{});
         }
     }
 
-    const attributes: ?*parser.NamedNodeMap = try parser.nodeGetAttributes(parsed_doc);
-
+    const attributes: ?*parser.NamedNodeMap = try parser.nodeGetAttributes(parsed_node);
     for (0..try parser.namedNodeMapGetLength(attributes.?)) |i| {
         const attribute: ?*parser.Attribute = try parser.namedNodeMapItem(attributes.?, @intCast(i));
         if (try parser.attributeGetValue(attribute.?)) |value| {
