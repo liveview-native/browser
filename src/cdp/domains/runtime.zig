@@ -20,24 +20,14 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 pub fn processMessage(cmd: anytype) !void {
-    const action = std.meta.stringToEnum(enum {
-        enable,
-        runIfWaitingForDebugger,
-        evaluate,
-        addBinding,
-        callFunctionOn,
-        releaseObject,
-        getProperties,
-    }, cmd.input.action) orelse return error.UnknownMethod;
-
     if (std.mem.eql(u8, cmd.input.action, "runIfWaitingForDebugger")) {
         return cmd.sendResult(null, .{});
     } else {
-        return sendInspector(cmd, action);
+        return sendInspector(cmd, cmd.input.action);
     }
 }
 
-fn sendInspector(cmd: anytype, action: anytype) !void {
+fn sendInspector(cmd: anytype, action: []const u8) !void {
     // save script in file at debug mode
     if (builtin.mode == .Debug) {
         try logInspector(cmd, action);
@@ -49,36 +39,34 @@ fn sendInspector(cmd: anytype, action: anytype) !void {
     bc.callInspector(cmd.input.json);
 }
 
-fn logInspector(cmd: anytype, action: anytype) !void {
-    const script = switch (action) {
-        .evaluate => blk: {
-            const params = (try cmd.params(struct {
-                expression: []const u8,
-                // contextId: ?u8 = null,
-                // returnByValue: ?bool = null,
-                // awaitPromise: ?bool = null,
-                // userGesture: ?bool = null,
-            })) orelse return error.InvalidParams;
+fn logInspector(cmd: anytype, action: []const u8) !void {
+    const script = if (std.mem.eql(action, "evaluate")) blk: {
+        const params = (try cmd.params(struct {
+            expression: []const u8,
+            // contextId: ?u8 = null,
+            // returnByValue: ?bool = null,
+            // awaitPromise: ?bool = null,
+            // userGesture: ?bool = null,
+        })) orelse return error.InvalidParams;
 
-            break :blk params.expression;
-        },
-        .callFunctionOn => blk: {
-            const params = (try cmd.params(struct {
-                functionDeclaration: []const u8,
-                // objectId: ?[]const u8 = null,
-                // executionContextId: ?u8 = null,
-                // arguments: ?[]struct {
-                //     value: ?[]const u8 = null,
-                //     objectId: ?[]const u8 = null,
-                // } = null,
-                // returnByValue: ?bool = null,
-                // awaitPromise: ?bool = null,
-                // userGesture: ?bool = null,
-            })) orelse return error.InvalidParams;
+        break :blk params.expression;
+    } else if (std.mem.eql(action, "callFunctionOn")) blk: {
+        const params = (try cmd.params(struct {
+            functionDeclaration: []const u8,
+            // objectId: ?[]const u8 = null,
+            // executionContextId: ?u8 = null,
+            // arguments: ?[]struct {
+            //     value: ?[]const u8 = null,
+            //     objectId: ?[]const u8 = null,
+            // } = null,
+            // returnByValue: ?bool = null,
+            // awaitPromise: ?bool = null,
+            // userGesture: ?bool = null,
+        })) orelse return error.InvalidParams;
 
-            break :blk params.functionDeclaration;
-        },
-        else => return,
+        break :blk params.functionDeclaration;
+    } else {
+        return;
     };
     const id = cmd.input.id orelse return error.RequiredId;
     const name = try std.fmt.allocPrint(cmd.arena, "id_{d}.js", .{id});
