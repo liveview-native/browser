@@ -102,6 +102,8 @@ pub const XMLHttpRequest = struct {
     response_mime: ?Mime = null,
     response_obj: ?ResponseObj = null,
 
+    upload: XMLHttpRequestUpload = XMLHttpRequestUpload{},
+
     pub const prototype = *XMLHttpRequestEventTarget;
 
     const State = enum(u16) {
@@ -221,6 +223,10 @@ pub const XMLHttpRequest = struct {
         if (self.send_flag) return DOMError.InvalidState;
 
         self.withCredentials = withCredentials;
+    }
+
+    pub fn get_upload(self: *XMLHttpRequest) XMLHttpRequestUpload {
+        return self.upload;
     }
 
     pub fn _open(
@@ -441,9 +447,11 @@ pub const XMLHttpRequest = struct {
         });
 
         if (header.contentType()) |ct| {
-            self.response_mime = Mime.parse(ct) catch |e| {
-                return self.onErr(e);
-            };
+            if (self.response_mime == null) {
+                self.response_mime = Mime.parse(ct) catch |e| {
+                    return self.onErr(e);
+                };
+            }
         }
 
         var it = transfer.responseHeaderIterator();
@@ -690,6 +698,10 @@ pub const XMLHttpRequest = struct {
         }
 
         return null;
+    }
+
+    pub fn _overrideMimeType(self: *XMLHttpRequest, mime: [] u8) !void {
+        self.response_mime = try Mime.parse(mime);
     }
 
     // setResponseObjDocument parses the received bytes as HTML document and

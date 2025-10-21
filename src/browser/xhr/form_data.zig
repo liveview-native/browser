@@ -26,6 +26,8 @@ const Page = @import("../page.zig").Page;
 const kv = @import("../key_value.zig");
 const iterator = @import("../iterator/iterator.zig");
 
+const js = @import("../js/js.zig");
+
 pub const Interfaces = .{
     FormData,
     KeyIterable,
@@ -89,6 +91,30 @@ pub const FormData = struct {
 
     pub fn _symbol_iterator(self: *const FormData) EntryIterable {
         return self._entries();
+    }
+
+    pub fn _forEach(self: *FormData, cbk: js.Function, this_arg: ?js.Object) !void {
+        var entries = _entries(self);
+        while (entries._next().value) |entry| {
+            var result: js.Function.Result = undefined;
+            if (this_arg) |this| {
+                cbk.tryCallWithThis(void, this, .{ entry[1], entry[0], self }, &result) catch {
+                    log.debug(.user_script, "callback error", .{
+                        .err = result.exception,
+                        .stack = result.stack,
+                        .source = "FormData foreach",
+                    });
+                };
+            } else {
+                cbk.tryCall(void, .{ entry[1], entry[0], self }, &result) catch {
+                    log.debug(.user_script, "callback error", .{
+                        .err = result.exception,
+                        .stack = result.stack,
+                        .source = "FormData foreach",
+                    });
+                };
+            }
+        }
     }
 
     pub fn write(self: *const FormData, encoding_: ?[]const u8, writer: anytype) !void {

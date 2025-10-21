@@ -144,7 +144,7 @@ pub const DOMTokenList = struct {
                 log.debug(.user_script, "callback error", .{
                     .err = result.exception,
                     .stack = result.stack,
-                    .soure = "tokenList foreach",
+                    .source = "tokenList foreach",
                 });
             };
         }
