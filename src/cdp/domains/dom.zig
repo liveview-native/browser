@@ -44,6 +44,7 @@ pub fn processMessage(cmd: anytype) !void {
         setNodeValue,
         setAttributesAsText,
         requestNode,
+        pushNodesByBackendIdsToFrontend
     }, cmd.input.action) orelse return error.UnknownMethod;
 
     switch (action) {
@@ -64,6 +65,7 @@ pub fn processMessage(cmd: anytype) !void {
         .setNodeValue => return setNodeValue(cmd),
         .setAttributesAsText => return setAttributesAsText(cmd),
         .requestNode => return requestNode(cmd),
+        .pushNodesByBackendIdsToFrontend => return pushNodesByBackendIdsToFrontend(cmd),
     }
 }
 
@@ -333,6 +335,14 @@ fn describeNode(cmd: anytype) !void {
     return cmd.sendResult(.{ .node = bc.nodeWriter(node, .{ .depth = params.depth }) }, .{});
 }
 
+fn pushNodesByBackendIdsToFrontend(cmd: anytype) !void {
+    const params = (try cmd.params(struct {
+        backendNodeIds: []u32,
+    })) orelse return error.InvalidParams;
+
+    return cmd.sendResult(.{ .nodeIds = params.backendNodeIds }, .{});
+}
+
 // An array of quad vertices, x immediately followed by y for each point, points clock-wise.
 // Note Y points downward
 // We are assuming the start/endpoint is not repeated.
@@ -467,7 +477,6 @@ fn requestChildNodes(cmd: anytype) !void {
 
     if (params.depth == 0) return error.InvalidParams;
     const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
-    // const session_id = bc.session_id orelse return error.SessionIdNotLoaded;
     const node = bc.node_registry.lookup_by_id.get(params.nodeId) orelse {
         return error.InvalidNode;
     };
@@ -476,7 +485,7 @@ fn requestChildNodes(cmd: anytype) !void {
         .parentId = node.id,
         .nodes = bc.nodeWriter(node, .{ .depth = params.depth, .exclude_root = true }),
     }, .{
-        // .session_id = session_id, // Chrome sends requestChildNodes on no session
+        .session_id = cmd.input.session_id,
     });
 
     return cmd.sendResult(null, .{});
