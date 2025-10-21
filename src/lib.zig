@@ -77,6 +77,7 @@ export fn lightpanda_page_navigate(page_ptr: *anyopaque, url: [*:0]const u8) voi
 
 const NativeClientHandler = *const fn (ctx: *anyopaque, message: [*:0]const u8) callconv(.c) void;
 const NativeClientFocusedNodeHandler = *const fn (ctx: *anyopaque, node_id: c_int) callconv(.c) void;
+const NativeClientPausedInDebuggerMessageHandler = *const fn (ctx: *anyopaque, msg: ?[*:0]const u8) callconv(.c) void;
 
 const NativeClient = struct {
     allocator: std.mem.Allocator,
@@ -85,6 +86,7 @@ const NativeClient = struct {
     // serialized: std.ArrayListUnmanaged([]const u8) = .{},
     handler: NativeClientHandler,
     focused_node_handler: NativeClientFocusedNodeHandler,
+    paused_in_debugger_message_handler: NativeClientPausedInDebuggerMessageHandler,
     ctx: *anyopaque,
 
     // devtools server
@@ -110,8 +112,15 @@ const NativeClient = struct {
         }
     };
 
-    fn init(alloc: std.mem.Allocator, handler: NativeClientHandler, focused_node_handler: NativeClientFocusedNodeHandler, cdp: *CDP, ctx: *anyopaque) NativeClient {
-        return .{ .allocator = alloc, .send_arena = std.heap.ArenaAllocator.init(alloc), .handler = handler, .focused_node_handler = focused_node_handler, .ctx = ctx, .cdp = cdp };
+    fn init(
+        alloc: std.mem.Allocator,
+        handler: NativeClientHandler,
+        focused_node_handler: NativeClientFocusedNodeHandler,
+        paused_in_debugger_message_handler: NativeClientPausedInDebuggerMessageHandler,
+        cdp: *CDP,
+        ctx: *anyopaque
+    ) NativeClient {
+        return .{ .allocator = alloc, .send_arena = std.heap.ArenaAllocator.init(alloc), .handler = handler, .focused_node_handler = focused_node_handler, .paused_in_debugger_message_handler = paused_in_debugger_message_handler, .ctx = ctx, .cdp = cdp };
     }
 
     pub fn sendJSON(self: *NativeClient, message: anytype, opts: std.json.Stringify.Options) !void {
@@ -169,6 +178,16 @@ const NativeClient = struct {
         }
     }
 
+    pub fn setPausedInDebuggerMessage(self: *NativeClient, msg: ?[]const u8) void {
+        if (msg) |paused_msg| {
+            const slice = self.allocator.dupeZ(u8, paused_msg) catch return;
+            defer self.allocator.free(slice);
+            self.paused_in_debugger_message_handler(self.ctx, slice);
+        } else {
+            self.paused_in_debugger_message_handler(self.ctx, null);
+        }
+    }
+
     pub fn runMessageLoopOnPause(self: *NativeClient) void {
         run_message_loop(self.cdp, self);
     }
@@ -205,13 +224,13 @@ const CDP = CDPT(struct {
     pub const Client = *NativeClient;
 });
 
-export fn lightpanda_cdp_init(app_ptr: *anyopaque, handler: NativeClientHandler, focused_node_handler: NativeClientFocusedNodeHandler, ctx: *anyopaque) ?*anyopaque {
+export fn lightpanda_cdp_init(app_ptr: *anyopaque, handler: NativeClientHandler, focused_node_handler: NativeClientFocusedNodeHandler, paused_in_debugger_message_handler: NativeClientPausedInDebuggerMessageHandler, ctx: *anyopaque) ?*anyopaque {
     const app: *App = @ptrCast(@alignCast(app_ptr));
     
     const cdp = app.allocator.create(CDP) catch return null;
 
     const client = app.allocator.create(NativeClient) catch return null;
-    client.* = NativeClient.init(app.allocator, handler, focused_node_handler, cdp, ctx);
+    client.* = NativeClient.init(app.allocator, handler, focused_node_handler, paused_in_debugger_message_handler, cdp, ctx);
 
     cdp.* = CDP.init(app, client) catch return null;
 
