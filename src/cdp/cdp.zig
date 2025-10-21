@@ -131,6 +131,10 @@ pub fn CDPT(comptime TypeProvider: type) type {
             self.client.setHighlightedNode(node_id);
         }
 
+        pub fn setPausedInDebuggerMessage(self: *Self, msg: ?[]const u8) void {
+            self.client.setPausedInDebuggerMessage(msg);
+        }
+
         pub fn handleMessage(self: *Self, msg: []const u8) bool {
             // if there's an error, it's already been logged
             self.processMessage(msg) catch return false;

@@ -13,7 +13,7 @@ pub fn processMessage(cmd: anytype) !void {
         .enable => return cmd.sendResult(null, .{}),
         .hideHighlight => return hideHighlight(cmd),
         .highlightNode => return highlightNode(cmd),
-        .setPausedInDebuggerMessage => return cmd.sendResult(null, .{}),
+        .setPausedInDebuggerMessage => return setPausedInDebuggerMessage(cmd),
     }
 }
 
@@ -29,6 +29,16 @@ fn highlightNode(cmd: anytype) !void {
     })) orelse return error.InvalidParams;
 
     cmd.cdp.setHighlightedNode(params.nodeId);
+
+    return cmd.sendResult(null, .{});
+}
+
+fn setPausedInDebuggerMessage(cmd: anytype) !void {
+    const params = (try cmd.params(struct {
+        message: ?[]const u8 = null,
+    })) orelse return error.InvalidParams;
+
+    cmd.cdp.setPausedInDebuggerMessage(params.message);
 
     return cmd.sendResult(null, .{});
 }
