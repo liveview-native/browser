@@ -386,7 +386,10 @@ pub fn BrowserContext(comptime CDP_T: type) type {
         // ever streamed. So if CDP is the only thing that needs bodies in
         // memory for an arbitrary amount of time, then that's where we're going
         // to store the,
+        captured_requests: std.AutoHashMapUnmanaged(usize, ?[]const u8),
         captured_responses: std.AutoHashMapUnmanaged(usize, std.ArrayListUnmanaged(u8)),
+
+        network_enabled: bool = false,
 
         const Self = @This();
 
@@ -418,6 +421,7 @@ pub fn BrowserContext(comptime CDP_T: type) type {
                 .inspector = inspector,
                 .notification_arena = cdp.notification_arena.allocator(),
                 .intercept_state = try InterceptState.init(allocator),
+                .captured_requests = .empty,
                 .captured_responses = .empty,
                 .log_interceptor = LogInterceptor(Self).init(allocator, self),
             };
@@ -457,6 +461,7 @@ pub fn BrowserContext(comptime CDP_T: type) type {
                 .inspector = inspector,
                 .notification_arena = cdp.notification_arena.allocator(),
                 .intercept_state = try InterceptState.init(allocator),
+                .captured_requests = .empty,
                 .captured_responses = .empty,
                 .log_interceptor = LogInterceptor(Self).init(allocator, self),
             };
@@ -542,6 +547,7 @@ pub fn BrowserContext(comptime CDP_T: type) type {
         }
 
         pub fn networkEnable(self: *Self) !void {
+            self.network_enabled = true;
             try self.cdp.browser.notification.register(.http_request_fail, self, onHttpRequestFail);
             try self.cdp.browser.notification.register(.http_request_start, self, onHttpRequestStart);
             try self.cdp.browser.notification.register(.http_request_done, self, onHttpRequestDone);
@@ -550,6 +556,7 @@ pub fn BrowserContext(comptime CDP_T: type) type {
         }
 
         pub fn networkDisable(self: *Self) void {
+            self.network_enabled = false;
             self.cdp.browser.notification.unregister(.http_request_fail, self);
             self.cdp.browser.notification.unregister(.http_request_start, self);
             self.cdp.browser.notification.unregister(.http_request_done, self);
@@ -627,6 +634,9 @@ pub fn BrowserContext(comptime CDP_T: type) type {
         pub fn onHttpRequestStart(ctx: *anyopaque, msg: *const Notification.RequestStart) !void {
             const self: *Self = @ptrCast(@alignCast(ctx));
             defer self.resetNotificationArena();
+            
+            try self.captured_requests.put(self.arena, msg.transfer.id, msg.transfer.req.body);
+
             try @import("domains/network.zig").httpRequestStart(self.notification_arena, self, msg);
         }
 

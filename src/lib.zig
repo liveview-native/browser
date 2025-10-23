@@ -326,6 +326,11 @@ fn run_message_loop(cdp: *CDP, client: *NativeClient) void {
                             .waitingForDebugger = true,
                         }
                     }) catch @panic("failed to send attach message");
+                    const page_navigated = @import("notification.zig").Notification.PageNavigated{
+                        .timestamp = 0,
+                        .url = cdp.browser_context.?.session.page.?.url.raw
+                    };
+                    @import("cdp/domains/page.zig").pageNavigated(&cdp.browser_context.?, &page_navigated) catch @panic("failed to send Page.pageNavigated");
                     devtools.sent_initial_events = true;
                 }
 
