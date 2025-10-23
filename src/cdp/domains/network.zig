@@ -241,6 +241,7 @@ pub fn httpRequestFail(arena: Allocator, bc: anytype, msg: *const Notification.R
     // We're missing a bunch of fields, but, for now, this seems like enough
     try bc.cdp.sendEvent("Network.loadingFailed", .{
         .requestId = try std.fmt.allocPrint(arena, "REQ-{d}", .{msg.transfer.id}),
+        .timestamp = std.time.timestamp(),
         // Seems to be what chrome answers with. I assume it depends on the type of error?
         .type = "Ping",
         .errorText = msg.err,
@@ -265,11 +266,13 @@ pub fn httpRequestStart(arena: Allocator, bc: anytype, msg: *const Notification.
     // We're missing a bunch of fields, but, for now, this seems like enough
     try bc.cdp.sendEvent("Network.requestWillBeSent", .{
         .requestId = try std.fmt.allocPrint(arena, "REQ-{d}", .{transfer.id}),
-        .frameId = target_id,
         .loaderId = bc.loader_id,
         .documentUrl = DocumentUrlWriter.init(&page.url.uri),
         .request = TransferAsRequestWriter.init(transfer),
+        .timestamp = std.time.timestamp(),
+        .wallTime = std.time.timestamp(),
         .initiator = .{ .type = "other" },
+        .frameId = target_id,
     }, .{ .session_id = session_id });
 }
 
@@ -284,6 +287,8 @@ pub fn httpResponseHeaderDone(arena: Allocator, bc: anytype, msg: *const Notific
         .requestId = try std.fmt.allocPrint(arena, "REQ-{d}", .{msg.transfer.id}),
         .loaderId = bc.loader_id,
         .frameId = target_id,
+        .timestamp = std.time.timestamp(),
+        .type = "XHR",
         .response = TransferAsResponseWriter.init(arena, msg.transfer),
     }, .{ .session_id = session_id });
 }
@@ -295,13 +300,14 @@ pub fn httpRequestDone(arena: Allocator, bc: anytype, msg: *const Notification.R
 
     try bc.cdp.sendEvent("Network.dataReceived", .{
         .requestId = try std.fmt.allocPrint(arena, "REQ-{d}", .{msg.transfer.id}),
-        .timestamp = 0,
+        .timestamp = std.time.timestamp(),
         .dataLength = msg.transfer.bytes_received,
         .encodedDataLength = msg.transfer.bytes_received,
     }, .{ .session_id = session_id });
 
     try bc.cdp.sendEvent("Network.loadingFinished", .{
         .requestId = try std.fmt.allocPrint(arena, "REQ-{d}", .{msg.transfer.id}),
+        .timestamp = std.time.timestamp(),
         .encodedDataLength = msg.transfer.bytes_received,
     }, .{ .session_id = session_id });
 }
