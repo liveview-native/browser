@@ -36,6 +36,9 @@ pub fn processMessage(cmd: anytype) !void {
         setCookies,
         getCookies,
         getResponseBody,
+        getRequestPostData,
+        setAttachDebugStack,
+        clearAcceptedEncodingsOverride
     }, cmd.input.action) orelse return error.UnknownMethod;
 
     switch (action) {
@@ -50,6 +53,9 @@ pub fn processMessage(cmd: anytype) !void {
         .setCookies => return setCookies(cmd),
         .getCookies => return getCookies(cmd),
         .getResponseBody => return getResponseBody(cmd),
+        .getRequestPostData => return getRequestPostData(cmd),
+        .setAttachDebugStack => return cmd.sendResult(null, .{}),
+        .clearAcceptedEncodingsOverride => return cmd.sendResult(null, .{}),
     }
 }
 
@@ -208,6 +214,20 @@ fn getResponseBody(cmd: anytype) !void {
     }, .{});
 }
 
+fn getRequestPostData(cmd: anytype) !void {
+    const params = (try cmd.params(struct {
+        requestId: []const u8, // "REQ-{d}"
+    })) orelse return error.InvalidParams;
+
+    const request_id = try idFromRequestId(params.requestId);
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    const buf = bc.captured_requests.getPtr(request_id) orelse return error.RequestNotFound;
+
+    try cmd.sendResult(.{
+        .postData = buf,
+    }, .{});
+}
+
 pub fn httpRequestFail(arena: Allocator, bc: anytype, msg: *const Notification.RequestFail) !void {
     // It's possible that the request failed because we aborted when the client
     // sent Target.closeTarget. In that case, bc.session_id will be cleared
@@ -272,6 +292,13 @@ pub fn httpRequestDone(arena: Allocator, bc: anytype, msg: *const Notification.R
     // detachTarget could be called, in which case, we still have a page doing
     // things, but no session.
     const session_id = bc.session_id orelse return;
+
+    try bc.cdp.sendEvent("Network.dataReceived", .{
+        .requestId = try std.fmt.allocPrint(arena, "REQ-{d}", .{msg.transfer.id}),
+        .timestamp = 0,
+        .dataLength = msg.transfer.bytes_received,
+        .encodedDataLength = msg.transfer.bytes_received,
+    }, .{ .session_id = session_id });
 
     try bc.cdp.sendEvent("Network.loadingFinished", .{
         .requestId = try std.fmt.allocPrint(arena, "REQ-{d}", .{msg.transfer.id}),
