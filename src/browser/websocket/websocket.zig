@@ -28,6 +28,7 @@ const Page = @import("../page.zig").Page;
 const Http = @import("../../http/Http.zig");
 const log = @import("../../log.zig");
 const c = Http.c;
+const Notification = @import("../../notification.zig").Notification;
 
 pub const WebSocket = struct {
     pub const prototype = *EventTarget;
@@ -61,6 +62,8 @@ pub const WebSocket = struct {
     onerror_cbk: ?Function = null,
     onclose_cbk: ?Function = null,
     onmessage_cbk: ?Function = null,
+
+    request_id: u64 = 0,
 
     pub fn constructor(uri_str: []const u8, protocols: ?[]const []const u8, page: *Page) !*WebSocket {
         // Validate URL format
@@ -201,6 +204,21 @@ pub const WebSocket = struct {
             return error.InvalidState;
         }
 
+        // events
+        self.request_id = page.session.browser.app.http.client.next_request_id + 1;
+        page.session.browser.app.http.client.next_request_id = self.request_id;
+        std.log.info("WEBSOCKET EVENT: {s}", .{ self.uri_str });
+        page.session.browser.notification.dispatch(.web_socket_created, &Notification.WebSocketCreated{
+            .request_id = self.request_id,
+            .url = self.uri_str,
+        });
+        page.session.browser.notification.dispatch(.web_socket_will_send_handshake_request, &Notification.WebSocketWillSendHandshakeRequest{
+            .request_id = self.request_id,
+            .request = Notification.WebSocketRequest{},
+            .timestamp = std.time.timestamp(),
+            .wall_time = std.time.timestamp(),
+        });
+
         var curl_fail: ?CurlFail = null;
         errdefer if (curl_fail) |fail| fail.do_log();
 
@@ -208,6 +226,15 @@ pub const WebSocket = struct {
         const connect_result = c.curl_easy_perform(handle);
         if (connect_result != 0) { self.ready_state = CLOSED; }
         try set_fail(connect_result, &curl_fail, .connect);
+
+        page.session.browser.notification.dispatch(.web_socket_handshake_response_received, &Notification.WebSocketHandshakeResponseReceived{
+            .request_id = self.request_id,
+            .response = Notification.WebSocketResponse{
+                .status = 101,
+                .status_text = "Switching Protocols"
+            },
+            .timestamp = std.time.timestamp(),
+        });
 
         // Connection successful
         log.info(.ws, "ws connection successful", .{});
@@ -384,6 +411,16 @@ pub const WebSocket = struct {
         if (sent < data.len) {
             self.buffered_amount += @intCast(data.len - sent);
         }
+
+        self.page.?.session.browser.notification.dispatch(.web_socket_frame_sent, &Notification.WebSocketFrameSent{
+            .request_id = self.request_id,
+            .timestamp = std.time.timestamp(),
+            .response = Notification.WebSocketFrame{
+                .opcode = 1,
+                .mask = true,
+                .payload_data = data,
+            }
+        });
     }
 
     pub fn _close(self: *WebSocket, code: ?u16, reason: ?[]const u8) !void {
@@ -452,6 +489,16 @@ pub const WebSocket = struct {
 
         if (received == 0) return;
         const frame = meta orelse return;
+
+        self.page.?.session.browser.notification.dispatch(.web_socket_frame_received, &Notification.WebSocketFrameReceived{
+            .request_id = self.request_id,
+            .timestamp = std.time.timestamp(),
+            .response = Notification.WebSocketFrame{
+                .opcode = 1,
+                .mask = false,
+                .payload_data = buffer[0..received],
+            }
+        });
 
         if ((frame.flags & c.CURLWS_CLOSE) != 0) {
             // Handle close frame

@@ -3,6 +3,7 @@ const std = @import("std");
 const log = @import("log.zig");
 const page = @import("browser/page.zig");
 const Transfer = @import("http/Client.zig").Transfer;
+const websocket = @import("browser/websocket/websocket.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -67,6 +68,12 @@ pub const Notification = struct {
         http_response_data: List = .{},
         http_response_header_done: List = .{},
         notification_created: List = .{},
+
+        web_socket_created: List = .{},
+        web_socket_will_send_handshake_request: List = .{},
+        web_socket_handshake_response_received: List = .{},
+        web_socket_frame_sent: List = .{},
+        web_socket_frame_received: List = .{},
     };
 
     const Events = union(enum) {
@@ -84,6 +91,12 @@ pub const Notification = struct {
         http_response_data: *const ResponseData,
         http_response_header_done: *const ResponseHeaderDone,
         notification_created: *Notification,
+
+        web_socket_created: *const WebSocketCreated,
+        web_socket_will_send_handshake_request: *const WebSocketWillSendHandshakeRequest,
+        web_socket_handshake_response_received: *const WebSocketHandshakeResponseReceived,
+        web_socket_frame_sent: *const WebSocketFrameSent,
+        web_socket_frame_received: *const WebSocketFrameReceived,
     };
     const EventType = std.meta.FieldEnum(Events);
 
@@ -138,6 +151,49 @@ pub const Notification = struct {
     pub const RequestFail = struct {
         transfer: *Transfer,
         err: anyerror,
+    };
+
+    pub const WebSocketCreated = struct {
+        request_id: u64,
+        url: []const u8,
+    };
+
+    pub const WebSocketWillSendHandshakeRequest = struct {
+        request_id: u64,
+        timestamp: i64,
+        wall_time: i64,
+        request: WebSocketRequest
+    };
+
+    pub const WebSocketRequest = struct {};
+
+    pub const WebSocketHandshakeResponseReceived = struct {
+        request_id: u64,
+        timestamp: i64,
+        response: WebSocketResponse,
+    };
+
+    pub const WebSocketResponse = struct {
+        status: u32,
+        status_text: []const u8,
+    };
+
+    pub const WebSocketFrameSent = struct {
+        request_id: u64,
+        timestamp: i64,
+        response: WebSocketFrame,
+    };
+
+    pub const WebSocketFrameReceived = struct {
+        request_id: u64,
+        timestamp: i64,
+        response: WebSocketFrame,
+    };
+
+    pub const WebSocketFrame = struct {
+        opcode: u32,
+        mask: bool,
+        payload_data: []const u8,
     };
 
     pub fn init(allocator: Allocator, parent: ?*Notification) !*Notification {
