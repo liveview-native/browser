@@ -547,21 +547,38 @@ pub fn BrowserContext(comptime CDP_T: type) type {
         }
 
         pub fn networkEnable(self: *Self) !void {
-            self.network_enabled = true;
+            if (self.network_enabled) {
+                return; // already setup
+            }
             try self.cdp.browser.notification.register(.http_request_fail, self, onHttpRequestFail);
             try self.cdp.browser.notification.register(.http_request_start, self, onHttpRequestStart);
             try self.cdp.browser.notification.register(.http_request_done, self, onHttpRequestDone);
             try self.cdp.browser.notification.register(.http_response_data, self, onHttpResponseData);
             try self.cdp.browser.notification.register(.http_response_header_done, self, onHttpResponseHeadersDone);
+
+            try self.cdp.browser.notification.register(.web_socket_created, self, onWebSocketCreated);
+            try self.cdp.browser.notification.register(.web_socket_will_send_handshake_request, self, onWebSocketWillSendHandshakeRequest);
+            try self.cdp.browser.notification.register(.web_socket_handshake_response_received, self, onWebSocketHandshakeResponseReceived);
+            try self.cdp.browser.notification.register(.web_socket_frame_received, self, onWebSocketFrameReceived);
+            try self.cdp.browser.notification.register(.web_socket_frame_sent, self, onWebSocketFrameSent);
+
+            self.network_enabled = true;
         }
 
         pub fn networkDisable(self: *Self) void {
-            self.network_enabled = false;
             self.cdp.browser.notification.unregister(.http_request_fail, self);
             self.cdp.browser.notification.unregister(.http_request_start, self);
             self.cdp.browser.notification.unregister(.http_request_done, self);
             self.cdp.browser.notification.unregister(.http_response_data, self);
             self.cdp.browser.notification.unregister(.http_response_header_done, self);
+
+            self.cdp.browser.notification.unregister(.web_socket_created, self);
+            self.cdp.browser.notification.unregister(.web_socket_will_send_handshake_request, self);
+            self.cdp.browser.notification.unregister(.web_socket_handshake_response_received, self);
+            self.cdp.browser.notification.unregister(.web_socket_frame_received, self);
+            self.cdp.browser.notification.unregister(.web_socket_frame_sent, self);
+            
+            self.network_enabled = false;
         }
 
         pub fn fetchEnable(self: *Self, authRequests: bool) !void {
@@ -680,6 +697,67 @@ pub fn BrowserContext(comptime CDP_T: type) type {
             const self: *Self = @ptrCast(@alignCast(ctx));
             defer self.resetNotificationArena();
             try @import("domains/fetch.zig").requestAuthRequired(self.notification_arena, self, data);
+        }
+
+        pub fn onWebSocketCreated(ctx: *anyopaque, data: *const Notification.WebSocketCreated) !void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            defer self.resetNotificationArena();
+            try self.cdp.sendEvent("Network.webSocketCreated", .{
+                .requestId = try std.fmt.allocPrint(self.arena, "REQ-{d}", .{ data.request_id }),
+                .url = data.url,
+            }, .{ .session_id = self.session_id });
+        }
+
+        pub fn onWebSocketWillSendHandshakeRequest(ctx: *anyopaque, data: *const Notification.WebSocketWillSendHandshakeRequest) !void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            defer self.resetNotificationArena();
+            try self.cdp.sendEvent("Network.webSocketWillSendHandshakeRequest", .{
+                .requestId = try std.fmt.allocPrint(self.arena, "REQ-{d}", .{ data.request_id }),
+                .request = data.request,
+                .timestamp = data.timestamp,
+                .wallTime = data.wall_time
+            }, .{ .session_id = self.session_id });
+        }
+
+        pub fn onWebSocketHandshakeResponseReceived(ctx: *anyopaque, data: *const Notification.WebSocketHandshakeResponseReceived) !void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            defer self.resetNotificationArena();
+            try self.cdp.sendEvent("Network.webSocketHandshakeResponseReceived", .{
+                .requestId = try std.fmt.allocPrint(self.arena, "REQ-{d}", .{ data.request_id }),
+                .response = .{
+                    .status = data.response.status,
+                    .statusText = data.response.status_text,
+                },
+                .timestamp = data.timestamp,
+            }, .{ .session_id = self.session_id });
+        }
+
+        pub fn onWebSocketFrameReceived(ctx: *anyopaque, data: *const Notification.WebSocketFrameReceived) !void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            defer self.resetNotificationArena();
+            try self.cdp.sendEvent("Network.webSocketFrameReceived", .{
+                .requestId = try std.fmt.allocPrint(self.arena, "REQ-{d}", .{ data.request_id }),
+                .response = .{
+                    .opcode = data.response.opcode,
+                    .mask = data.response.mask,
+                    .payloadData = data.response.payload_data,
+                },
+                .timestamp = data.timestamp,
+            }, .{ .session_id = self.session_id });
+        }
+
+        pub fn onWebSocketFrameSent(ctx: *anyopaque, data: *const Notification.WebSocketFrameSent) !void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            defer self.resetNotificationArena();
+            try self.cdp.sendEvent("Network.webSocketFrameSent", .{
+                .requestId = try std.fmt.allocPrint(self.arena, "REQ-{d}", .{ data.request_id }),
+                .response = .{
+                    .opcode = data.response.opcode,
+                    .mask = data.response.mask,
+                    .payloadData = data.response.payload_data,
+                },
+                .timestamp = data.timestamp,
+            }, .{ .session_id = self.session_id });
         }
 
         fn resetNotificationArena(self: *Self) void {
