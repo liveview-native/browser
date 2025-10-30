@@ -192,7 +192,10 @@ fn addDependencies(b: *Build, mod: *Build.Module, opts: *Build.Step.Options) !vo
 
         const release_dir = if (mod.optimize.? == .Debug) "debug" else "release";
         const os = switch (target.result.os.tag) {
-            .linux => "linux",
+            .linux => switch (target.result.abi) {
+                .android => "android",
+                else => "linux",
+            },
             .macos => "macos",
             .ios => "ios",
             else => return error.UnsupportedPlatform,
@@ -223,6 +226,13 @@ fn addDependencies(b: *Build, mod: *Build.Module, opts: *Build.Step.Options) !vo
                 const framework_path = try std.fmt.allocPrint(mod.owner.allocator, "{s}/System/Library/Frameworks", .{sdk_path});
                 mod.addSystemFrameworkPath(.{ .cwd_relative = framework_path });
                 mod.linkFramework("CoreFoundation", .{});
+            },
+            .linux => {
+                if (target.result.abi.isAndroid()) {
+                    const sdk_path = try std.process.getEnvVarOwned(mod.owner.allocator, "SDK");
+                    const include_path = try std.fmt.allocPrint(mod.owner.allocator, "{s}/usr/include", .{sdk_path});
+                    mod.addIncludePath(.{ .cwd_relative = include_path });
+                }
             },
             else => {},
         }
@@ -425,6 +435,13 @@ fn addDependencies(b: *Build, mod: *Build.Module, opts: *Build.Step.Options) !vo
                 mod.linkFramework("CoreFoundation", .{});
                 mod.linkFramework("SystemConfiguration", .{});
             },
+            .linux => {
+                if (target.result.abi.isAndroid()) {
+                    const sdk_path = try std.process.getEnvVarOwned(mod.owner.allocator, "SDK");
+                    const include_path = try std.fmt.allocPrint(mod.owner.allocator, "{s}/usr/include", .{sdk_path});
+                    mod.addIncludePath(.{ .cwd_relative = include_path });
+                }
+            },
             else => {},
         }
     }
@@ -433,7 +450,10 @@ fn addDependencies(b: *Build, mod: *Build.Module, opts: *Build.Step.Options) !vo
 fn moduleNetSurf(b: *Build, mod: *Build.Module) !void {
     const target = mod.resolved_target.?;
     const os = switch (target.result.os.tag) {
-        .linux => "linux",
+        .linux => switch (target.result.abi) {
+            .android => "android",
+            else => "linux",
+        },
         .macos => "macos",
         .ios => switch (target.result.abi) {
             .simulator => "iphonesimulator",
@@ -725,6 +745,18 @@ fn buildCurl(b: *Build, m: *Build.Module) !void {
         const sdk_path = try std.process.getEnvVarOwned(b.allocator, "SDK");
         const include_path = try std.fmt.allocPrint(b.allocator, "{s}/usr/include", .{sdk_path});
         m.addIncludePath(.{ .cwd_relative = include_path });
+    }
+
+    if (m.resolved_target.?.result.abi.isAndroid()) {
+        const triple = try m.resolved_target.?.result.linuxTriple(b.allocator);
+        
+        const sdk_path = try std.process.getEnvVarOwned(b.allocator, "SDK");
+        
+        const include_path = try std.fmt.allocPrint(b.allocator, "{s}/usr/include", .{sdk_path});
+        m.addIncludePath(.{ .cwd_relative = include_path });
+
+        const triple_include_path = try std.fmt.allocPrint(b.allocator, "{s}/usr/include/{s}", .{sdk_path, triple});
+        m.addIncludePath(.{ .cwd_relative = triple_include_path });
     }
 
     const curl = b.addLibrary(.{
