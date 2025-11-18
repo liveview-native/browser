@@ -65,18 +65,66 @@ pub fn build(b: *Build) !void {
         // static lib
         // ----------
 
-        const liblightpanda_module = b.addModule("lightpanda", .{
-            .root_source_file = b.path("src/lib.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-            .link_libcpp = true,
-        });
-        try addDependencies(b, liblightpanda_module, opts);
+        if (target.result.abi.isAndroid()) {
+            const liblightpanda_module = b.addModule("lightpanda", .{
+                .root_source_file = b.path("src/lib.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+                .link_libcpp = true,
+            });
+            try addDependencies(b, liblightpanda_module, opts);
+            // androidAddArchive(b, liblightpanda_module);
 
-        const lib = b.addLibrary(.{ .name = "lightpanda", .root_module = liblightpanda_module, .use_llvm = true, .linkage = .static });
-        lib.bundle_compiler_rt = true;
-        b.installArtifact(lib);
+            const lib = b.addLibrary(.{ .name = "lightpanda", .root_module = liblightpanda_module, .use_llvm = true, .use_lld = true, .linkage = .dynamic });
+
+            if (target.result.abi.isAndroid()) {
+                const libc_file = b.path("android_libc.txt");
+                lib.setLibCFile(libc_file);
+                lib.root_module.addLibraryPath(.{ .cwd_relative = "/Users/carson.katri/android-ndk/android-ndk-r27d/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/aarch64-linux-android" });
+                lib.root_module.linkSystemLibrary("c++_shared", .{ .needed = true });
+            }
+
+            lib.bundle_compiler_rt = true;
+            
+            const install_artifact = b.addInstallArtifact(lib, .{
+                .dest_sub_path = try std.fs.path.join(b.allocator, &.{
+                    try target.result.zigTriple(b.allocator),
+                    lib.out_filename
+                })
+            });
+            b.getInstallStep().dependOn(&install_artifact.step);
+        } else {
+            const liblightpanda_module = b.addModule("lightpanda", .{
+                .root_source_file = b.path("src/lib.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+                .link_libcpp = true,
+            });
+            try addDependencies(b, liblightpanda_module, opts);
+            // androidAddArchive(b, liblightpanda_module);
+
+            const lib = b.addLibrary(.{ .name = "lightpanda", .root_module = liblightpanda_module, .use_llvm = true, .linkage = .static });
+
+            if (target.result.abi.isAndroid()) {
+                const libc_file = b.path("android_libc.txt");
+                lib.setLibCFile(libc_file);
+                lib.root_module.addLibraryPath(.{ .cwd_relative = "/Users/carson.katri/android-ndk/android-ndk-r27d/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/aarch64-linux-android" });
+                lib.root_module.linkSystemLibrary("c++_shared", .{ .needed = true });
+            }
+
+            lib.bundle_compiler_rt = true;
+            lib.bundle_ubsan_rt = true;
+            
+            const install_artifact = b.addInstallArtifact(lib, .{
+                .dest_sub_path = try std.fs.path.join(b.allocator, &.{
+                    try target.result.zigTriple(b.allocator),
+                    lib.out_filename
+                })
+            });
+            b.getInstallStep().dependOn(&install_artifact.step);
+        }
     }
 
     // {
@@ -169,6 +217,22 @@ pub fn build(b: *Build) !void {
     }
 }
 
+fn androidAddArchive(b: *Build, mod: *std.Build.Module) void {
+    // android's lld won't link nested archives
+    // extract the object files beforehand and link each one
+
+    const object_files_path = "zig-out/o";
+
+    const dir = std.fs.cwd().openDir(object_files_path, .{}) catch unreachable;
+    var it = dir.iterate();
+    while (it.next() catch unreachable) |entry| {
+        if (std.mem.endsWith(u8, entry.name, ".o")) {
+            const obj_path = std.fs.path.join(b.allocator, &.{ object_files_path, entry.name }) catch @panic("OOM");
+            mod.addObjectFile(.{ .cwd_relative = obj_path });
+        }
+    }
+}
+
 fn addDependencies(b: *Build, mod: *Build.Module, opts: *Build.Step.Options) !void {
     try moduleNetSurf(b, mod);
     mod.addImport("build_config", opts.createModule());
@@ -213,7 +277,10 @@ fn addDependencies(b: *Build, mod: *Build.Module, opts: *Build.Step.Options) !vo
                 .{release_dir},
             );
         };
-        mod.addObjectFile(mod.owner.path(lib_path));
+
+        // if (!target.result.abi.isAndroid()) { // android's lld won't link nested archives
+            mod.addObjectFile(mod.owner.path(lib_path));
+        // }
 
         switch (target.result.os.tag) {
             .macos => {
@@ -480,7 +547,9 @@ fn moduleNetSurf(b: *Build, mod: *Build.Module) !void {
         "vendor/libiconv/out/{s}-{s}/lib/libiconv.a",
         .{ os, arch },
     );
-    mod.addObjectFile(b.path(libiconv_lib_path));
+    // if (!target.result.abi.isAndroid()) {
+        mod.addObjectFile(b.path(libiconv_lib_path));
+    // }
     mod.addIncludePath(b.path(libiconv_include_path));
 
     {
@@ -491,7 +560,9 @@ fn moduleNetSurf(b: *Build, mod: *Build.Module) !void {
             mimalloc ++ "/out/{s}-{s}/lib/libmimalloc.a",
             .{ os, arch },
         );
-        mod.addObjectFile(b.path(lib_path));
+        // if (!target.result.abi.isAndroid()) {
+            mod.addObjectFile(b.path(lib_path));
+        // }
         mod.addIncludePath(b.path(mimalloc ++ "/include"));
     }
 
@@ -516,7 +587,9 @@ fn moduleNetSurf(b: *Build, mod: *Build.Module) !void {
             ns ++ "/out/{s}-{s}/lib/" ++ lib ++ ".a",
             .{ os, arch },
         );
-        mod.addObjectFile(b.path(ns_lib_path));
+        // if (!target.result.abi.isAndroid()) {
+            mod.addObjectFile(b.path(ns_lib_path));
+        // }
         mod.addIncludePath(b.path(ns ++ "/" ++ lib ++ "/src"));
     }
 }

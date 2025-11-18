@@ -40,7 +40,7 @@ fn sendInspector(cmd: anytype, action: []const u8) !void {
 }
 
 fn logInspector(cmd: anytype, action: []const u8) !void {
-    const script = if (std.mem.eql(action, "evaluate")) blk: {
+    const script = if (std.mem.eql(u8, action, "evaluate")) blk: {
         const params = (try cmd.params(struct {
             expression: []const u8,
             // contextId: ?u8 = null,
@@ -50,7 +50,7 @@ fn logInspector(cmd: anytype, action: []const u8) !void {
         })) orelse return error.InvalidParams;
 
         break :blk params.expression;
-    } else if (std.mem.eql(action, "callFunctionOn")) blk: {
+    } else if (std.mem.eql(u8, action, "callFunctionOn")) blk: {
         const params = (try cmd.params(struct {
             functionDeclaration: []const u8,
             // objectId: ?[]const u8 = null,
