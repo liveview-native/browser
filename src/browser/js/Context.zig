@@ -1285,18 +1285,25 @@ fn _dynamicModuleCallback(self: *Context, specifier: [:0]const u8, referrer: []c
     // We need to do part of what the first case is going to do in
     // `dynamicModuleSourceCallback`, but we can skip some steps
     // since the module is alrady loaded,
-    std.debug.assert(gop.value_ptr.module != null);
-    std.debug.assert(gop.value_ptr.module_promise != null);
+    if (gop.value_ptr.module != null and gop.value_ptr.module_promise != null) {
+        // like before, we want to set this up so that if anything else
+        // tries to load this module, it can just return our promise
+        // since we're going to be doing all the work.
+        gop.value_ptr.resolver_promise = persisted_promise;
 
-    // like before, we want to set this up so that if anything else
-    // tries to load this module, it can just return our promise
-    // since we're going to be doing all the work.
-    gop.value_ptr.resolver_promise = persisted_promise;
-
-    // But we can skip direclty to `resolveDynamicModule` which is
-    // what the above callback will eventually do.
-    self.resolveDynamicModule(state, gop.value_ptr.*);
-    return promise;
+        // But we can skip direclty to `resolveDynamicModule` which is
+        // what the above callback will eventually do.
+        self.resolveDynamicModule(state, gop.value_ptr.*);
+        return promise;
+    } else {
+        // module is not loaded yet
+        gop.value_ptr.resolver_promise = persisted_promise;
+        self.script_manager.?.getAsyncModule(specifier, dynamicModuleSourceCallback, state, referrer) catch |err| {
+            const error_msg = v8.String.initUtf8(isolate, @errorName(err));
+            _ = resolver.reject(self.v8_context, error_msg.toValue());
+        };
+        return promise;
+    }
 }
 
 fn dynamicModuleSourceCallback(ctx: *anyopaque, fetch_result_: anyerror!ScriptManager.GetResult) void {
