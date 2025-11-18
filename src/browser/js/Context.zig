@@ -1315,7 +1315,15 @@ fn _dynamicModuleCallback(self: *Context, specifier: [:0]const u8, referrer: []c
             gop.value_ptr.module_promise = PersistentPromise.init(self.isolate, .{ .handle = evaluated.handle });
         }
     }
-    
+
+    // like before, we want to set this up so that if anything else
+    // tries to load this module, it can just return our promise
+    // since we're going to be doing all the work.
+    gop.value_ptr.resolver_promise = persisted_promise;
+
+    // But we can skip direclty to `resolveDynamicModule` which is
+    // what the above callback will eventually do.
+    self.resolveDynamicModule(state, gop.value_ptr.*);
     return promise;
 }
 
