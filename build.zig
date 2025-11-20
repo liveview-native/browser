@@ -74,7 +74,6 @@ pub fn build(b: *Build) !void {
                 .link_libcpp = true,
             });
             try addDependencies(b, liblightpanda_module, opts);
-            // androidAddArchive(b, liblightpanda_module);
 
             const lib = b.addLibrary(.{ .name = "lightpanda", .root_module = liblightpanda_module, .use_llvm = true, .use_lld = true, .linkage = .dynamic });
 
@@ -101,7 +100,21 @@ pub fn build(b: *Build) !void {
                 .link_libcpp = true,
             });
             try addDependencies(b, liblightpanda_module, opts);
-            // androidAddArchive(b, liblightpanda_module);
+
+            const ada_dep = b.dependency("ada-singleheader", .{});
+            if (target.result.os.tag == .ios) {
+                const sdk_path = try std.process.getEnvVarOwned(b.allocator, "SDK");
+                liblightpanda_module.addSystemIncludePath(.{ .cwd_relative = try std.fmt.allocPrint(b.allocator, "{s}/usr/include", .{sdk_path}) });
+                liblightpanda_module.addCSourceFile(.{
+                    .file = ada_dep.path("ada.cpp"),
+                    .flags = &.{ "-std=c++20", "-O3", "-isysroot", sdk_path },
+                });
+            } else {
+                liblightpanda_module.addCSourceFile(.{
+                    .file = ada_dep.path("ada.cpp"),
+                    .flags = &.{ "-std=c++20", "-O3" },
+                });
+            }
 
             const lib = b.addLibrary(.{ .name = "lightpanda", .root_module = liblightpanda_module, .use_llvm = true, .linkage = .static });
 
@@ -205,22 +218,6 @@ pub fn build(b: *Build) !void {
         const build_v8 = b.addRunArtifact(v8.artifact("build-v8"));
         const build_step = b.step("build-v8", "Build v8");
         build_step.dependOn(&build_v8.step);
-    }
-}
-
-fn androidAddArchive(b: *Build, mod: *std.Build.Module) void {
-    // android's lld won't link nested archives
-    // extract the object files beforehand and link each one
-
-    const object_files_path = "zig-out/o";
-
-    const dir = std.fs.cwd().openDir(object_files_path, .{}) catch unreachable;
-    var it = dir.iterate();
-    while (it.next() catch unreachable) |entry| {
-        if (std.mem.endsWith(u8, entry.name, ".o")) {
-            const obj_path = std.fs.path.join(b.allocator, &.{ object_files_path, entry.name }) catch @panic("OOM");
-            mod.addObjectFile(.{ .cwd_relative = obj_path });
-        }
     }
 }
 
