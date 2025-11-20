@@ -492,7 +492,7 @@ fn autoEnableDOMMonitoring(bc: anytype, page: anytype) !void {
             try self.cdp.sendEvent("DOM.childNodeInserted", .{
                 .parentNodeId = parent_node_cdp.id,
                 .previousNodeId = if (previous_node_cdp) |prev| prev.id else null,
-                .node = self.bc.nodeWriter(inserted_node_cdp, .{}), // Full node serialization
+                .node = self.bc.nodeWriter(inserted_node_cdp, .{ .depth = -1 }), // Full node serialization
             }, .{
                 .session_id = self.session_id,
             });
