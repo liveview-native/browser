@@ -461,7 +461,7 @@ fn autoEnableDOMMonitoring(bc: anytype, page: anytype) !void {
             const node = try self.bc.node_registry.register(target_node);
 
             // Get the new character data value
-            const new_value = parser.mutationEventNewValue(mutation_event) catch return orelse return;
+            const new_value = parser.mutationEventNewValue(mutation_event) orelse return;
 
             // Send CDP DOM.characterDataModified event
             try self.cdp.sendEvent("DOM.characterDataModified", .{
@@ -485,7 +485,7 @@ fn autoEnableDOMMonitoring(bc: anytype, page: anytype) !void {
             const parent_node_cdp = try self.bc.node_registry.register(parent_node);
 
             // Find the previous sibling and register it if it exists
-            const previous_sibling = try parser.nodePreviousSibling(inserted_node);
+            const previous_sibling = parser.nodePreviousSibling(inserted_node);
             const previous_node_cdp = if (previous_sibling) |prev| try self.bc.node_registry.register(prev) else null;
 
             // Send CDP DOM.childNodeInserted event
@@ -525,7 +525,7 @@ fn autoEnableDOMMonitoring(bc: anytype, page: anytype) !void {
             const event_target = parser.eventTarget(event) orelse return;
             const target_node = parser.eventTargetToNode(event_target);
             const node = try self.bc.node_registry.register(target_node);
-            if (try parser.mutationEventNewValue(mutation_event)) |new_value| {
+            if (parser.mutationEventNewValue(mutation_event)) |new_value| {
                 // Send CDP DOM.attributeModified event
                 try self.cdp.sendEvent("DOM.attributeModified", .{
                     .nodeId = node.id,
@@ -541,7 +541,7 @@ fn autoEnableDOMMonitoring(bc: anytype, page: anytype) !void {
         }
 
         fn _handle(self: *Self, event: *parser.Event) !void {
-            const event_type_str = try parser.eventType(event);
+            const event_type_str = parser.eventType(event);
             const tags = comptime std.meta.tags(EventType);
             inline for (tags) |tag| {
                 if (std.mem.eql(u8, event_type_str, @tagName(tag))) {

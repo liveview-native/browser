@@ -78,12 +78,10 @@ pub fn build(b: *Build) !void {
 
             const lib = b.addLibrary(.{ .name = "lightpanda", .root_module = liblightpanda_module, .use_llvm = true, .use_lld = true, .linkage = .dynamic });
 
-            if (target.result.abi.isAndroid()) {
-                const libc_file = b.path("android_libc.txt");
-                lib.setLibCFile(libc_file);
-                lib.root_module.addLibraryPath(.{ .cwd_relative = "/Users/carson.katri/android-ndk/android-ndk-r27d/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/aarch64-linux-android" });
-                lib.root_module.linkSystemLibrary("c++_shared", .{ .needed = true });
-            }
+            const libc_file = b.path("android_libc.txt");
+            lib.setLibCFile(libc_file);
+            lib.root_module.addLibraryPath(.{ .cwd_relative = "/Users/carson.katri/android-ndk/android-ndk-r27d/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/aarch64-linux-android" });
+            lib.root_module.linkSystemLibrary("c++_shared", .{ .needed = true });
 
             lib.bundle_compiler_rt = true;
             
@@ -106,13 +104,6 @@ pub fn build(b: *Build) !void {
             // androidAddArchive(b, liblightpanda_module);
 
             const lib = b.addLibrary(.{ .name = "lightpanda", .root_module = liblightpanda_module, .use_llvm = true, .linkage = .static });
-
-            if (target.result.abi.isAndroid()) {
-                const libc_file = b.path("android_libc.txt");
-                lib.setLibCFile(libc_file);
-                lib.root_module.addLibraryPath(.{ .cwd_relative = "/Users/carson.katri/android-ndk/android-ndk-r27d/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/aarch64-linux-android" });
-                lib.root_module.linkSystemLibrary("c++_shared", .{ .needed = true });
-            }
 
             lib.bundle_compiler_rt = true;
             lib.bundle_ubsan_rt = true;
@@ -1025,11 +1016,21 @@ pub fn buildAda(b: *Build, m: *Build.Module) !void {
         .linkage = .static,
     });
 
-    ada_lib.addCSourceFile(.{
-        .file = ada_dep.path("ada.cpp"),
-        .flags = &.{ "-std=c++20", "-O3" },
-        .language = .cpp,
-    });
+    if (m.resolved_target.?.result.os.tag == .ios) {
+        const sdk_path = try std.process.getEnvVarOwned(b.allocator, "SDK");
+        ada_lib.root_module.addSystemIncludePath(.{ .cwd_relative = try std.fmt.allocPrint(b.allocator, "{s}/usr/include", .{sdk_path}) });
+        ada_lib.addCSourceFile(.{
+            .file = ada_dep.path("ada.cpp"),
+            .flags = &.{ "-std=c++20", "-O3", "-isysroot", sdk_path },
+            .language = .cpp,
+        });
+    } else {
+        ada_lib.addCSourceFile(.{
+            .file = ada_dep.path("ada.cpp"),
+            .flags = &.{ "-std=c++20", "-O3" },
+            .language = .cpp,
+        });
+    }
 
     ada_lib.installHeader(ada_dep.path("ada_c.h"), "ada_c.h");
 

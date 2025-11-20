@@ -230,7 +230,7 @@ pub const Node = struct {
         const old_value = try get_nodeValue(self);
 
         // Get node type to check if this is character data
-        const node_type = try parser.nodeType(self);
+        const node_type = parser.nodeType(self);
 
         // Perform the original operation
         try parser.nodeSetValue(self, data);
@@ -241,7 +241,7 @@ pub const Node = struct {
             node_type == parser.NodeType.cdata_section) {
 
             // Get the document to dispatch the event
-            const doc = try parser.nodeOwnerDocument(self);
+            const doc = parser.nodeOwnerDocument(self);
 
             // Dispatch DOMCharacterDataModified event
             _ = parser.dispatchCharacterDataModifiedEvent(

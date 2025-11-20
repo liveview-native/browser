@@ -23,6 +23,7 @@ const Interfaces = generate.Tuple(.{
     @import("../xmlserializer/xmlserializer.zig").Interfaces,
     @import("../fetch/fetch.zig").Interfaces,
     @import("../streams/streams.zig").Interfaces,
+    @import("../websocket/websocket.zig").Interfaces,
 });
 
 pub const Types = @typeInfo(Interfaces).@"struct".fields;
