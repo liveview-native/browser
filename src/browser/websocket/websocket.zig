@@ -56,6 +56,8 @@ pub const WebSocket = struct {
     page: ?*Page = null,
     allocator: std.mem.Allocator = undefined,
 
+    headers: [*c]c.struct_curl_slist = null,
+
     // Event handlers
     onopen_cbk: ?Function = null,
     onerror_cbk: ?Function = null,
@@ -64,7 +66,8 @@ pub const WebSocket = struct {
 
     request_id: u64 = 0,
 
-    pub fn constructor(uri_str: []const u8, protocols: ?[]const []const u8, page: *Page) !*WebSocket {
+    // FIXME: protocols should somehow support being a single string or an array of strings
+    pub fn constructor(uri_str: []const u8, protocols: ?[]const u8, page: *Page) !*WebSocket {
         // Validate URL format
         const uri = try std.Uri.parse(uri_str);
 
@@ -78,7 +81,7 @@ pub const WebSocket = struct {
         websocket.* = WebSocket{
             .uri = uri,
             .uri_str = try page.arena.dupe(u8, uri_str),
-            .protocols = if (protocols) |p| try page.arena.dupe([]const u8, p) else &.{},
+            .protocols = if (protocols) |p| &.{ try page.arena.dupe(u8, p) } else &.{},
             .ready_state = CONNECTING,
             .page = page,
             .allocator = page.arena,
@@ -190,7 +193,22 @@ pub const WebSocket = struct {
             log.info(.ws, "cookies set", .{});
         }
 
-        // TODO: Set Sec-WebSocket-Protocol header.
+        if (self.protocols.len > 0) {
+            // 1. Create the string
+            const protocol_header_str = try std.fmt.allocPrint(self.allocator, "Sec-WebSocket-Protocol: {s}", .{self.protocols[0]});
+            // curl_slist_append copies the string, so we can free our Zig string immediately
+            defer self.allocator.free(protocol_header_str);
+
+            // 2. Append to list using .ptr
+            // Note: You need to store 'headers' in your struct to free it later!
+            // Ideally add `headers: ?*c.struct_curl_slist = null` to your WebSocket struct fields.
+            self.headers = c.curl_slist_append(self.headers, protocol_header_str.ptr);
+
+            // 3. Pass to curl
+            const header_result = c.curl_easy_setopt(handle, c.CURLOPT_HTTPHEADER, self.headers);
+            try set_fail(header_result, &curl_fail, .ws_options);
+        }
+        
         log.info(.ws, "ws handle init completed", .{});
     }
 
@@ -330,6 +348,10 @@ pub const WebSocket = struct {
     }
 
     pub fn deinit(self: *WebSocket) void {
+        if (self.headers) |h| {
+            c.curl_slist_free_all(h);
+            self.headers = null;
+        }
         if (self.curl_handle) |handle| {
             c.curl_easy_cleanup(handle);
             self.curl_handle = null;

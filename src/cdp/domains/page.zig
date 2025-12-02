@@ -35,7 +35,8 @@ pub fn processMessage(cmd: anytype) !void {
         navigate,
         stopLoading,
         getResourceContent,
-        getResourceTree
+        getResourceTree,
+        reload
     }, cmd.input.action) orelse return error.UnknownMethod;
 
     switch (action) {
@@ -48,6 +49,7 @@ pub fn processMessage(cmd: anytype) !void {
         .stopLoading => return cmd.sendResult(null, .{}),
         .getResourceContent => return getResourceContent(cmd),
         .getResourceTree => return getResourceTree(cmd),
+        .reload => return reload(cmd),
     }
 }
 
@@ -608,6 +610,12 @@ fn getResourceTree(cmd: anytype) !void {
             .resources = bc.session.page.?.script_manager.resources.items
         },
     }, .{});
+}
+
+fn reload(cmd: anytype) !void {
+    const bc = cmd.browser_context orelse return error.BrowserContextNotLoaded;
+    
+    try bc.session.page.?.navigateFromWebAPI(bc.session.page.?.url.raw, .{ .reason = .script, .force = true }, .reload);
 }
 
 const testing = @import("../testing.zig");
