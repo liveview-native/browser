@@ -150,9 +150,10 @@ fn clearList(list: *std.DoublyLinkedList) void {
 }
 
 pub fn addFromElement(self: *ScriptManager, element: *parser.Element, comptime ctx: []const u8) !void {
+    log.warn(.browser, "SM addFromElement entry", .{ctx});
+
     if (try parser.elementGetAttribute(element, "nomodule") != null) {
-        // these scripts should only be loaded if we don't support modules
-        // but since we do support modules, we can just skip them.
+        log.warn(.browser, "SM skipping nomodule", .{});
         return;
     }
 
@@ -161,15 +162,19 @@ pub fn addFromElement(self: *ScriptManager, element: *parser.Element, comptime c
     // that script tag will immediately get executed by our scriptAddedCallback.
     // However, if the location where the script tag is inserted happens to be
     // below where processHTMLDoc currently is, then we'll re-run that same script
-    // again in processHTMLDoc. This flag is used to let us know if a specific
+    // again in processHTMLDoc.
+    // This flag is used to let us know if a specific
     // <script> has already been processed.
     if (try parser.scriptGetProcessed(@ptrCast(element))) {
+        log.warn(.browser, "SM script already processed", .{});
         return;
     }
     try parser.scriptSetProcessed(@ptrCast(element), true);
-
+    
     const kind: Script.Kind = blk: {
         const script_type = try parser.elementGetAttribute(element, "type") orelse break :blk .javascript;
+        log.warn(.browser, "SM script type", .{script_type});
+        
         if (script_type.len == 0) {
             break :blk .javascript;
         }
@@ -186,30 +191,36 @@ pub fn addFromElement(self: *ScriptManager, element: *parser.Element, comptime c
             break :blk .importmap;
         }
 
+        log.warn(.browser, "SM unknown type ignored", .{});
         // "type" could be anything, but only the above are ones we need to process.
         // Common other ones are application/json, application/ld+json, text/template
 
         return;
     };
+    log.warn(.browser, "SM script kind resolved", .{kind});
 
     const page = self.page;
     var source: Script.Source = undefined;
     var remote_url: ?[:0]const u8 = null;
-    if (try parser.elementGetAttribute(element, "src")) |src| {
-        if (try DataURI.parse(page.arena, src)) |data_uri| {
+    if (try parser.elementGetAttribute(element, "src")) |src|
+    {
+        log.warn(.browser, "SM found src attribute", .{src});
+        if (try DataURI.parse(page.arena, src)) |data_uri|
+        {
             source = .{ .@"inline" = data_uri };
         } else {
             remote_url = try URL.stitch(page.arena, src, page.url.raw, .{ .null_terminated = true });
+            log.warn(.browser, "SM resolved remote url", .{remote_url.?});
             source = .{ .remote = .{} };
         }
     } else {
+        log.warn(.browser, "SM inline script content", .{});
         const inline_source = parser.nodeTextContent(@ptrCast(element)) orelse return;
         source = .{ .@"inline" = inline_source };
     }
 
     const script = try self.script_pool.create();
     errdefer self.script_pool.destroy(script);
-
     script.* = .{
         .kind = kind,
         .node = .{},
@@ -219,7 +230,8 @@ pub fn addFromElement(self: *ScriptManager, element: *parser.Element, comptime c
         .complete = source == .@"inline",
         .url = remote_url orelse page.url.raw,
         .mode = blk: {
-            if (source == .@"inline") {
+            if 
+            (source == .@"inline") {
                 // inline modules are deferred, all other inline scripts have a
                 // normal execution flow
                 break :blk if (kind == .module) .@"defer" else .normal;
@@ -233,15 +245,15 @@ pub fn addFromElement(self: *ScriptManager, element: *parser.Element, comptime c
             break :blk .normal;
         },
     };
-
     const list = self.scriptList(script);
     list.append(&script.node);
     errdefer list.remove(&script.node);
 
-    if (remote_url) |url| {
+    if (remote_url) |url|
+    {
+        log.warn(.browser, "SM requesting url", .{url});
         var headers = try self.client.newHeaders();
         try page.requestCookie(.{}).headersForRequest(page.arena, url, &headers);
-
         try self.client.request(.{
             .url = url,
             .ctx = script,
@@ -249,13 +261,14 @@ pub fn addFromElement(self: *ScriptManager, element: *parser.Element, comptime c
             .headers = headers,
             .cookie_jar = page.cookie_jar,
             .resource_type = .script,
-            .start_callback = if (log.enabled(.http, .debug)) Script.startCallback else null,
+            .start_callback = if 
+            (log.enabled(.http, .debug)) Script.startCallback else null,
             .header_callback = Script.headerCallback,
             .data_callback = Script.dataCallback,
             .done_callback = Script.doneCallback,
             .error_callback = Script.errorCallback,
         });
-
+        log.warn(.browser, "SM request queue successful", .{});
         log.debug(.http, "script queue", .{
             .ctx = ctx,
             .url = remote_url.?,

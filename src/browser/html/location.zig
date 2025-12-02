@@ -100,7 +100,7 @@ pub const Location = struct {
     }
 
     pub fn _reload(_: *const Location, page: *Page) !void {
-        return page.navigateFromWebAPI(page.url.raw, .{ .reason = .script }, .reload);
+        return page.navigateFromWebAPI(page.url.raw, .{ .reason = .script, .force = true }, .reload);
     }
 
     pub fn _toString(self: *Location, page: *Page) ![]const u8 {

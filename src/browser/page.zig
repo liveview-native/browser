@@ -833,17 +833,34 @@ pub const Page = struct {
                 const root = parser.documentToNode(doc);
                 const walker = Walker{};
                 var next: ?*parser.Node = null;
+
+                log.warn(.browser, "--- START DOM WALK ---", .{});
+
                 while (try walker.get_next(root, next)) |n| {
                     next = n;
                     const node = next.?;
-                    const e = parser.nodeToElement(node);
-                    const tag = try parser.elementTag(e);
-                    if (tag != .script) {
+
+                    const tag = parser.nodeHTMLGetTagType(node) catch |err| {
+                        log.warn(.browser, "Walk error getting tag", .{err});
+                        return err;
+                    };
+
+                    if (tag == null or tag.? != .script) {
                         // ignore non-js script.
                         continue;
                     }
-                    try self.script_manager.addFromElement(@ptrCast(node), "page");
+
+                    log.warn(.browser, "Found script tag - adding", .{});
+
+                    try parser.scriptSetProcessed(@ptrCast(node), false);
+
+                    self.script_manager.addFromElement(@ptrCast(node), "page") catch |err| {
+                        log.warn(.browser, "Failed to add script", .{err});
+                        return err;
+                    };
                 }
+
+                log.warn(.browser, "--- END DOM WALK ---", .{});
 
                 self.script_manager.staticScriptsDone();
 

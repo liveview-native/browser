@@ -287,7 +287,7 @@ pub fn navigate(
             }
         },
         .reload => {
-            try page.navigateFromWebAPI(url, .{ .reason = .navigation }, kind);
+            try page.navigateFromWebAPI(url, .{ .reason = .navigation, .force = true }, kind);
         },
     }
 
