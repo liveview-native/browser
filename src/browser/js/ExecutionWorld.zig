@@ -67,7 +67,7 @@ pub fn createContext(self: *ExecutionWorld, page: *Page, enter: bool, global_cal
         const global_template = window_template.getInstanceTemplate();
 
         // Configure the missing property interceptor on the Window template
-        if (global_callback != null) {
+        if (global_callback != null and !self.env.global_interceptor_installed) {
             const configuration = v8.NamedPropertyHandlerConfiguration{
                 .getter = struct {
                     fn callback(c_name: ?*const v8.C_Name, raw_info: ?*const v8.C_PropertyCallbackInfo) callconv(.c) u8 {
@@ -86,6 +86,8 @@ pub fn createContext(self: *ExecutionWorld, page: *Page, enter: bool, global_cal
                 .flags = v8.PropertyHandlerFlags.NonMasking | v8.PropertyHandlerFlags.OnlyInterceptStrings,
             };
             global_template.setNamedProperty(configuration, null);
+
+            self.env.global_interceptor_installed = true;
         }
 
         // Create the context using the Window template

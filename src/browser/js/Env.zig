@@ -51,6 +51,8 @@ meta_lookup: [Types.len]types.Meta,
 
 context_id: usize,
 
+global_interceptor_installed: bool,
+
 const Opts = struct {};
 
 pub fn init(allocator: Allocator, platform: *const Platform, _: Opts) !*Env {
@@ -92,6 +94,7 @@ pub fn init(allocator: Allocator, platform: *const Platform, _: Opts) !*Env {
         .isolate_params = params,
         .meta_lookup = undefined,
         .prototype_lookup = undefined,
+        .global_interceptor_installed = false,
     };
 
     // Populate our templates lookup. generateClass creates the

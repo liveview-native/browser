@@ -31,13 +31,11 @@ const Notification = @import("../../notification.zig").Notification;
 
 pub const WebSocket = struct {
     pub const prototype = *EventTarget;
-
     // WebSocket connection state constants
     pub const CONNECTING: u16 = 0;
     pub const OPEN: u16 = 1;
     pub const CLOSING: u16 = 2;
     pub const CLOSED: u16 = 3;
-
     // Extend libdom event target for pure zig struct.
     base: parser.EventTargetTBase = parser.EventTargetTBase{ .internal_target_type = .websocket },
 
@@ -53,6 +51,9 @@ pub const WebSocket = struct {
 
     // Internal connection state
     curl_handle: ?*c.CURL = null,
+    multi_handle: ?*c.CURLM = null,
+    handshake_started: bool = false,
+
     page: ?*Page = null,
     allocator: std.mem.Allocator = undefined,
 
@@ -81,7 +82,8 @@ pub const WebSocket = struct {
         websocket.* = WebSocket{
             .uri = uri,
             .uri_str = try page.arena.dupe(u8, uri_str),
-            .protocols = if (protocols) |p| &.{ try page.arena.dupe(u8, p) } else &.{},
+            .protocols = if (protocols) |p|
+                &.{ try page.arena.dupe(u8, p) } else &.{},
             .ready_state = CONNECTING,
             .page = page,
             .allocator = page.arena,
@@ -89,7 +91,8 @@ pub const WebSocket = struct {
 
         // Initialize libcurl handle but don't connect yet
 
-        websocket.initHandle() catch |err| {
+        websocket.initHandle() catch |err|
+        {
             log.err(.ws, "ws initHandle failed", .{ .err = err });
             return err;
         };
@@ -97,7 +100,8 @@ pub const WebSocket = struct {
         log.info(.ws, "ws handle initialized", .{});
 
         // Schedule asynchronous connection attempt
-        page.scheduler.add(websocket, connectionTask, 0, .{ .name = "WebSocket connection" }) catch |err| {
+        page.scheduler.add(websocket, connectionTask, 0, .{ .name = "WebSocket connection" }) catch |err|
+        {
             log.err(.ws, "ws reschedule failed", .{ .err = err });
         };
 
@@ -134,6 +138,17 @@ pub const WebSocket = struct {
             log.err(.ws, "ws curl_easy_init failed", .{});
             return error.CurlInitFailed;
         }
+        
+        // Create multi handle for non-blocking connection
+        self.multi_handle = c.curl_multi_init();
+        if (self.multi_handle == null) {
+            log.err(.ws, "ws curl_multi_init failed", .{});
+            return error.CurlInitFailed;
+        }
+
+        // Enable verbose logging for debugging handshake issues
+        _ = c.curl_easy_setopt(self.curl_handle.?, c.CURLOPT_VERBOSE, @as(c_long, 1));
+
         log.info(.ws, "ws curl handle created", .{});
 
         var curl_fail: ?CurlFail = null;
@@ -143,6 +158,10 @@ pub const WebSocket = struct {
                 c.curl_easy_cleanup(handle);
                 self.curl_handle = null;
             }
+            if (self.multi_handle) |handle| {
+                _ = c.curl_multi_cleanup(handle);
+                self.multi_handle = null;
+            }
 
             if (curl_fail) |fail| fail.do_log();
         }
@@ -150,10 +169,8 @@ pub const WebSocket = struct {
         const handle = self.curl_handle.?;
         // Set URL
         const url_cstr = try self.allocator.dupeZ(u8, self.uri_str);
-
         const url_result = c.curl_easy_setopt(handle, c.CURLOPT_URL, url_cstr.ptr);
         try set_fail(url_result, &curl_fail, .uri);
-
         // Enable WebSocket
         const connect_result = c.curl_easy_setopt(handle, c.CURLOPT_CONNECT_ONLY, @as(c_long, 2));
         try set_fail(connect_result, &curl_fail, .connect_only);
@@ -162,9 +179,7 @@ pub const WebSocket = struct {
         const ws_result = c.curl_easy_setopt(handle, c.CURLOPT_WS_OPTIONS, @as(c_long, 0));
         try set_fail(ws_result, &curl_fail, .ws_options);
 
-        // SSL/TLS configuration - mimic what HTTP client does
-        // Check if we should verify TLS certificates (same logic as HTTP client)
-        // Access the app configuration through the browser
+        // SSL/TLS configuration
         const app = page.session.browser.app;
         const tls_verify_host = app.config.tls_verify_host;
 
@@ -183,28 +198,34 @@ pub const WebSocket = struct {
         try page.cookie_jar.forRequest(&self.uri, cookies.writer(self.allocator), .{
             .is_http = true,
             .origin_uri = &page.url.uri,
-            .is_navigation = false, // WebSocket connections are not navigation
+            .is_navigation = false,
         });
 
         if (cookies.items.len > 0) {
-            try cookies.append(self.allocator, 0); // null-terminate
+            try cookies.append(self.allocator, 0);
             const cookie_result = c.curl_easy_setopt(handle, c.CURLOPT_COOKIE, @as([*c]const u8, @ptrCast(cookies.items.ptr)));
             try set_fail(cookie_result, &curl_fail, .cookie);
             log.info(.ws, "cookies set", .{});
         }
 
+        // Add Origin header (REQUIRED for Phoenix/LiveView)
+        // Manually adding \x00 to ensure null termination for C
+        if (self.page) |p| {
+            const origin_str = try p.origin(self.allocator);
+            const origin_header = try std.fmt.allocPrint(self.allocator, "Origin: {s}\x00", .{origin_str});
+            defer self.allocator.free(origin_header);
+            self.headers = c.curl_slist_append(self.headers, origin_header.ptr);
+        }
+
+        // Add Subprotocols if present
         if (self.protocols.len > 0) {
-            // 1. Create the string
-            const protocol_header_str = try std.fmt.allocPrint(self.allocator, "Sec-WebSocket-Protocol: {s}", .{self.protocols[0]});
-            // curl_slist_append copies the string, so we can free our Zig string immediately
+            const protocol_header_str = try std.fmt.allocPrint(self.allocator, "Sec-WebSocket-Protocol: {s}\x00", .{self.protocols[0]});
             defer self.allocator.free(protocol_header_str);
-
-            // 2. Append to list using .ptr
-            // Note: You need to store 'headers' in your struct to free it later!
-            // Ideally add `headers: ?*c.struct_curl_slist = null` to your WebSocket struct fields.
             self.headers = c.curl_slist_append(self.headers, protocol_header_str.ptr);
+        }
 
-            // 3. Pass to curl
+        // Apply all headers to the handle
+        if (self.headers != null) {
             const header_result = c.curl_easy_setopt(handle, c.CURLOPT_HTTPHEADER, self.headers);
             try set_fail(header_result, &curl_fail, .ws_options);
         }
@@ -212,62 +233,99 @@ pub const WebSocket = struct {
         log.info(.ws, "ws handle init completed", .{});
     }
 
-    fn attemptConnection(self: *WebSocket) !void {
+    fn processConnection(self: *WebSocket) !bool {
         const page = self.page orelse return error.InvalidState;
         const handle = self.curl_handle orelse return error.InvalidState;
+        const multi = self.multi_handle orelse return error.InvalidState;
 
         if (self.ready_state != CONNECTING) {
-            log.err(.ws, "ws invalid state", .{ .ready_state = self.ready_state });
-            return error.InvalidState;
+            return true;
         }
 
-        // events
-        self.request_id = page.session.browser.app.http.client.next_request_id + 1;
-        page.session.browser.app.http.client.next_request_id = self.request_id;
-        std.log.info("WEBSOCKET EVENT: {s}", .{ self.uri_str });
-        page.session.browser.notification.dispatch(.web_socket_created, &Notification.WebSocketCreated{
-            .request_id = self.request_id,
-            .url = self.uri_str,
-        });
-        page.session.browser.notification.dispatch(.web_socket_will_send_handshake_request, &Notification.WebSocketWillSendHandshakeRequest{
-            .request_id = self.request_id,
-            .request = Notification.WebSocketRequest{},
-            .timestamp = std.time.timestamp(),
-            .wall_time = std.time.timestamp(),
-        });
+        // 1. Start the Handshake
+        if (!self.handshake_started) {
+            self.request_id = page.session.browser.app.http.client.next_request_id + 1;
+            page.session.browser.app.http.client.next_request_id = self.request_id;
+            
+            std.log.info("WEBSOCKET EVENT: {s}", .{ self.uri_str });
+            page.session.browser.notification.dispatch(.web_socket_created, &Notification.WebSocketCreated{
+                .request_id = self.request_id,
+                .url = self.uri_str,
+            });
+            page.session.browser.notification.dispatch(.web_socket_will_send_handshake_request, &Notification.WebSocketWillSendHandshakeRequest{
+                .request_id = self.request_id,
+                .request = Notification.WebSocketRequest{},
+                .timestamp = std.time.timestamp(),
+                .wall_time = std.time.timestamp(),
+            });
 
-        var curl_fail: ?CurlFail = null;
-        errdefer if (curl_fail) |fail| fail.do_log();
+            const add_res = c.curl_multi_add_handle(multi, handle);
+            if (add_res != c.CURLM_OK) return error.CurlAddFailed;
 
-        // Attempt to connect
-        const connect_result = c.curl_easy_perform(handle);
-        if (connect_result != 0) { self.ready_state = CLOSED; }
-        try set_fail(connect_result, &curl_fail, .connect);
+            self.handshake_started = true;
+        }
 
-        page.session.browser.notification.dispatch(.web_socket_handshake_response_received, &Notification.WebSocketHandshakeResponseReceived{
-            .request_id = self.request_id,
-            .response = Notification.WebSocketResponse{
-                .status = 101,
-                .status_text = "Switching Protocols"
-            },
-            .timestamp = std.time.timestamp(),
-        });
+        // 2. Drive the Connection
+        var running: c_int = 0;
+        const perf_res = c.curl_multi_perform(multi, &running);
+        if (perf_res != c.CURLM_OK) {
+             _ = c.curl_multi_remove_handle(multi, handle);
+             return error.CurlPerformFailed;
+        }
 
-        // Connection successful
-        log.info(.ws, "ws connection successful", .{});
-        self.ready_state = OPEN;
+        // 3. Check for Completion
+        var msgs_in_queue: c_int = 0;
+        while (c.curl_multi_info_read(multi, &msgs_in_queue)) |msg| {
+            if (msg.*.msg == c.CURLMSG_DONE) {
+                // IMPORTANT: Do NOT remove the handle from multi on success for CONNECT_ONLY.
+                // Removing it causes libcurl to close the connection.
+                // We leave it attached so curl_ws_recv can use the connection.
 
-        self.dispatchOpenEvent() catch |err| {
-            log.err(.ws, "ws dispatch open failed", .{ .err = err });
-            // Log the error but don't fail the connection
-            // The connection is still valid even if event dispatch fails
-        };
+                const result = msg.*.data.result;
+                
+                if (result != c.CURLE_OK) {
+                    // On error, we DO remove it to clean up.
+                    _ = c.curl_multi_remove_handle(multi, handle);
 
-        // Schedule periodic message polling
-        page.scheduler.add(self, receiveTask, 10, .{ .name = "WebSocket receive", .low_priority = true }) catch |err| {
-            log.err(.ws, "ws schedule receive failed", .{ .err = err });
-            // Log error but don't fail the connection
-        };
+                    const err_str = c.curl_easy_strerror(result);
+                    var response_code: c_long = 0;
+                    _ = c.curl_easy_getinfo(handle, c.CURLINFO_RESPONSE_CODE, &response_code);
+
+                    log.err(.ws, "ws handshake failed", .{ 
+                        .curl_result = result, 
+                        .curl_error = std.mem.span(err_str),
+                        .http_status = response_code 
+                    });
+
+                    self.ready_state = CLOSED;
+                    return error.ConnectFailed;
+                }
+
+                page.session.browser.notification.dispatch(.web_socket_handshake_response_received, &Notification.WebSocketHandshakeResponseReceived{
+                    .request_id = self.request_id,
+                    .response = Notification.WebSocketResponse{
+                        .status = 101,
+                        .status_text = "Switching Protocols"
+                    },
+                    .timestamp = std.time.timestamp(),
+                });
+
+                log.info(.ws, "ws connection successful", .{});
+                self.ready_state = OPEN;
+                
+                self.dispatchOpenEvent() catch |err| {
+                    log.err(.ws, "ws dispatch open failed", .{ .err = err });
+                };
+
+                page.scheduler.add(self, receiveTask, 10, .{ .name = "WebSocket receive", .low_priority = true }) catch |err| {
+                    log.err(.ws, "ws schedule receive failed", .{ .err = err });
+                };
+
+                return true;
+            }
+        }
+
+        return false;
     }
 
     fn dispatchOpenEvent(self: *WebSocket) !void {
@@ -321,14 +379,22 @@ pub const WebSocket = struct {
             return null; // Don't attempt connection if not in connecting state
         }
 
-        self.attemptConnection() catch |err| {
+        const finished = self.processConnection() catch |err| {
             log.err(.ws, "ws task connection failed", .{ .err = err });
             // If connection fails, set state and try to dispatch events safely
             self.ready_state = CLOSED;
+            
+            self.dispatchErrorEvent() catch |e| {
+                 log.err(.ws, "ws dispatch error failed", .{ .err = e });
+            };
+            self.dispatchCloseEvent(1006, "Connection failed") catch |e| {
+                 log.err(.ws, "ws dispatch close failed", .{ .err = e });
+            };
+
+            return null;
         };
 
-        log.info(.ws, "ws connection task completed", .{});
-        return null; // Don't repeat this task
+        return if (finished) null else 10;
     }
 
     // Task function for scheduler - polls for incoming WebSocket messages
@@ -344,13 +410,21 @@ pub const WebSocket = struct {
     }
 
     pub fn connect(self: *WebSocket) !void {
-        try self.attemptConnection();
+        _ = try self.processConnection();
     }
 
     pub fn deinit(self: *WebSocket) void {
         if (self.headers) |h| {
             c.curl_slist_free_all(h);
             self.headers = null;
+        }
+        if (self.multi_handle) |m| {
+            // IMPORTANT: Remove easy handle before cleanup
+            if (self.curl_handle) |easy| {
+                _ = c.curl_multi_remove_handle(m, easy);
+            }
+            _ = c.curl_multi_cleanup(m);
+            self.multi_handle = null;
         }
         if (self.curl_handle) |handle| {
             c.curl_easy_cleanup(handle);
@@ -453,11 +527,15 @@ pub const WebSocket = struct {
 
         if (self.curl_handle) |handle| {
             // Send close frame
-            const close_code = code orelse 1000; // Normal closure
+            const close_code = code orelse 1000;
+
+            // Normal closure
             const close_reason = reason orelse "";
 
             // Create close payload: 2-byte code + reason
-            var close_payload: [2 + 125]u8 = undefined; // Max 125 bytes for close reason per WebSocket spec
+            var close_payload: [2 + 125]u8 = undefined;
+
+            // Max 125 bytes for close reason per WebSocket spec
             const code_bytes = std.mem.toBytes(std.mem.nativeToBig(u16, close_code));
             close_payload[0] = code_bytes[0];
             close_payload[1] = code_bytes[1];
@@ -601,28 +679,32 @@ pub const WebSocket = struct {
     }
 
     pub fn set_onopen(self: *WebSocket, listener: ?EventHandler.Listener, page: *Page) !void {
-        if (self.onopen_cbk) |cbk| try self.unregister("open", cbk.id);
+        if (self.onopen_cbk) |cbk|
+            try self.unregister("open", cbk.id);
         if (listener) |listen| {
             self.onopen_cbk = try self.register(page.arena, "open", listen);
         }
     }
 
     pub fn set_onerror(self: *WebSocket, listener: ?EventHandler.Listener, page: *Page) !void {
-        if (self.onerror_cbk) |cbk| try self.unregister("error", cbk.id);
+        if (self.onerror_cbk) |cbk|
+            try self.unregister("error", cbk.id);
         if (listener) |listen| {
             self.onerror_cbk = try self.register(page.arena, "error", listen);
         }
     }
 
     pub fn set_onclose(self: *WebSocket, listener: ?EventHandler.Listener, page: *Page) !void {
-        if (self.onclose_cbk) |cbk| try self.unregister("close", cbk.id);
+        if (self.onclose_cbk) |cbk|
+            try self.unregister("close", cbk.id);
         if (listener) |listen| {
             self.onclose_cbk = try self.register(page.arena, "close", listen);
         }
     }
 
     pub fn set_onmessage(self: *WebSocket, listener: ?EventHandler.Listener, page: *Page) !void {
-        if (self.onmessage_cbk) |cbk| try self.unregister("message", cbk.id);
+        if (self.onmessage_cbk) |cbk|
+            try self.unregister("message", cbk.id);
         if (listener) |listen| {
             self.onmessage_cbk = try self.register(page.arena, "message", listen);
         }
