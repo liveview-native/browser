@@ -52,7 +52,6 @@ pub fn deinit(self: *ExecutionWorld) void {
 // all page related memory easily managed.
 pub fn createContext(self: *ExecutionWorld, page: *Page, enter: bool, global_callback: ?js.GlobalMissingCallback) !*Context {
     std.debug.assert(self.context == null);
-
     const env = self.env;
     const isolate = env.isolate;
     const Global = @TypeOf(page.window);
@@ -63,14 +62,11 @@ pub fn createContext(self: *ExecutionWorld, page: *Page, enter: bool, global_cal
         v8.HandleScope.init(&temp_scope, isolate);
         defer temp_scope.deinit();
 
-        const js_global = v8.FunctionTemplate.initDefault(isolate);
-        Env.attachClass(Global, isolate, js_global);
+        // Get the existing Window template
+        const window_template = templates[types.getId(Global)];
+        const global_template = window_template.getInstanceTemplate();
 
-        const global_template = js_global.getInstanceTemplate();
-        global_template.setInternalFieldCount(1);
-
-        // Configure the missing property callback on the global
-        // object.
+        // Configure the missing property interceptor on the Window template
         if (global_callback != null) {
             const configuration = v8.NamedPropertyHandlerConfiguration{
                 .getter = struct {
@@ -78,9 +74,11 @@ pub fn createContext(self: *ExecutionWorld, page: *Page, enter: bool, global_cal
                         const info = v8.PropertyCallbackInfo.initFromV8(raw_info);
                         const context = Context.fromIsolate(info.getIsolate());
 
-                        const property = context.valueToString(.{ .handle = c_name.? }, .{}) catch "???";
-                        if (context.global_callback.?.missing(property, context)) {
-                            return v8.Intercepted.Yes;
+                        if (context.global_callback) |cb| {
+                            const property = context.valueToString(.{ .handle = c_name.? }, .{}) catch "???";
+                            if (cb.missing(property, context)) {
+                                return v8.Intercepted.Yes;
+                            }
                         }
                         return v8.Intercepted.No;
                     }
@@ -90,54 +88,18 @@ pub fn createContext(self: *ExecutionWorld, page: *Page, enter: bool, global_cal
             global_template.setNamedProperty(configuration, null);
         }
 
-        // All the FunctionTemplates that we created and setup in Env.init
-        // are now going to get associated with our global instance.
-        inline for (Types, 0..) |s, i| {
-            const Struct = s.defaultValue().?;
-            const class_name = v8.String.initUtf8(isolate, comptime js.classNameForStruct(Struct));
-            global_template.set(class_name.toName(), templates[i], v8.PropertyAttribute.None);
-        }
-
-        // The global object (Window) has already been hooked into the v8
-        // engine when the Env was initialized - like every other type.
-        // But the V8 global is its own FunctionTemplate instance so even
-        // though it's also a Window, we need to set the prototype for this
-        // specific instance of the the Window.
-        if (@hasDecl(Global, "prototype")) {
-            const ProtoType = types.Receiver(@typeInfo(Global.prototype).pointer.child);
-            js_global.inherit(templates[types.getId(ProtoType)]);
-        }
-
+        // Create the context using the Window template
         const context_local = v8.Context.init(isolate, global_template, null);
         const v8_context = v8.Persistent(v8.Context).init(isolate, context_local).castToContext();
+        
         v8_context.enter();
+        
         errdefer if (enter) v8_context.exit();
         defer if (!enter) v8_context.exit();
 
-        // This shouldn't be necessary, but it is:
-        // https://groups.google.com/g/v8-users/c/qAQQBmbi--8
-        // TODO: see if newer V8 engines have a way around this.
-        inline for (Types, 0..) |s, i| {
-            const Struct = s.defaultValue().?;
-
-            if (@hasDecl(Struct, "prototype")) {
-                const ProtoType = types.Receiver(@typeInfo(Struct.prototype).pointer.child);
-                if (!types.has(ProtoType)) {
-                    @compileError("Type '" ++ @typeName(Struct) ++ "' defines an unknown prototype: " ++ @typeName(ProtoType));
-                }
-
-                const proto_obj = templates[types.getId(ProtoType)].getFunction(v8_context).toObject();
-
-                const self_obj = templates[i].getFunction(v8_context).toObject();
-                _ = self_obj.setPrototype(v8_context, proto_obj);
-            }
-        }
         break :blk v8_context;
     };
 
-    // For a Page we only create one HandleScope, it is stored in the main World (enter==true). A page can have multple contexts, 1 for each World.
-    // The main Context that enters and holds the HandleScope should therefore always be created first. Following other worlds for this page
-    // like isolated Worlds, will thereby place their objects on the main page's HandleScope. Note: In the furure the number of context will multiply multiple frames support
     var handle_scope: ?v8.HandleScope = null;
     if (enter) {
         handle_scope = @as(v8.HandleScope, undefined);
@@ -145,16 +107,6 @@ pub fn createContext(self: *ExecutionWorld, page: *Page, enter: bool, global_cal
     }
     errdefer if (enter) handle_scope.?.deinit();
 
-    // we get better CDP results using v8's Console
-    // {
-    //     // If we want to overwrite the built-in console, we have to
-    //     // delete the built-in one.
-    //     const js_obj = v8_context.getGlobal();
-    //     const console_key = v8.String.initUtf8(isolate, "console");
-    //     if (js_obj.deleteValue(v8_context, console_key) == false) {
-    //         return error.ConsoleDeleteError;
-    //     }
-    // }
     const context_id = env.context_id;
     env.context_id = context_id + 1;
 
@@ -174,15 +126,23 @@ pub fn createContext(self: *ExecutionWorld, page: *Page, enter: bool, global_cal
 
     var context = &self.context.?;
     {
-        // Store a pointer to our context inside the v8 context so that, given
-        // a v8 context, we can get our context out
+        // IMPORTANT: This must happen BEFORE any property setting that might trigger the interceptor
         const data = isolate.initBigIntU64(@intCast(@intFromPtr(context)));
         v8_context.setEmbedderData(1, data);
     }
 
-    // Custom exception
-    // NOTE: there is no way in v8 to subclass the Error built-in type
-    // TODO: this is an horrible hack
+    // Re-add all the Types (DOMException, Event, etc.) to the global object instance
+    // We do this NOW, after EmbedderData is set, to avoid crashing if the interceptor fires.
+    const global_obj = v8_context.getGlobal();
+    inline for (Types, 0..) |s, i| {
+        const Struct = s.defaultValue().?;
+        const class_name = v8.String.initUtf8(isolate, comptime js.classNameForStruct(Struct));
+        
+        const constructor = templates[i].getFunction(v8_context);
+        _ = global_obj.setValue(v8_context, class_name, constructor.toValue());
+    }
+
+    // Custom exception setup
     inline for (Types) |s| {
         const Struct = s.defaultValue().?;
         if (@hasDecl(Struct, "ErrorSet")) {
@@ -191,23 +151,13 @@ pub fn createContext(self: *ExecutionWorld, page: *Page, enter: bool, global_cal
         }
     }
 
-    // Primitive attributes are set directly on the FunctionTemplate
-    // when we setup the environment. But we cannot set more complex
-    // types (v8 will crash).
-    //
-    // Plus, just to create more complex types, we always need a
-    // context, i.e. an Array has to have a Context to exist.
-    //
-    // As far as I can tell, getting the FunctionTemplate's object
-    // and setting values directly on it, for each context, is the
-    // way to do this.
+    // Set complex attributes
     inline for (Types, 0..) |s, i| {
         const Struct = s.defaultValue().?;
         inline for (@typeInfo(Struct).@"struct".decls) |declaration| {
             const name = declaration.name;
             if (comptime name[0] == '_') {
                 const value = @field(Struct, name);
-
                 if (comptime js.isComplexAttributeType(@typeInfo(@TypeOf(value)))) {
                     const js_obj = templates[i].getFunction(v8_context).toObject();
                     const js_name = v8.String.initUtf8(isolate, name[1..]).toName();
