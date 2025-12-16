@@ -19,6 +19,8 @@
 const std = @import("std");
 const log = @import("../../log.zig");
 
+const URL = @import("../../url.zig").URL;
+
 const js = @import("../js/js.zig");
 const Page = @import("../page.zig").Page;
 const Window = @import("window.zig").Window;
@@ -58,10 +60,20 @@ pub fn get_state(_: *History, page: *Page) !?js.Value {
 
 pub fn _pushState(_: *const History, state: js.Object, _: ?[]const u8, _url: ?[]const u8, page: *Page) !void {
     const arena = page.session.arena;
-    const url = if (_url) |u| try arena.dupe(u8, u) else try arena.dupe(u8, page.url.raw);
+
+    // Resolve the incoming URL (which might be relative) against the current page URL
+    const current_url = page.url.raw;
+    const url_arg = _url orelse current_url;
+    const resolved_url = try URL.stitch(arena, url_arg, current_url, .{});
+
+    // Update the Page's URL immediately so window.location reflects the change
+    const new_url_parsed = try URL.parse(resolved_url, null);
+    page.url = new_url_parsed;
 
     const json = state.toJson(arena) catch return error.DataClone;
-    _ = try page.session.navigation.pushEntry(url, .{ .source = .history, .value = json }, page, true);
+    
+    // Pass the fully resolved URL to the navigation entry
+    _ = try page.session.navigation.pushEntry(resolved_url, .{ .source = .history, .value = json }, page, true);
 }
 
 pub fn _replaceState(_: *const History, state: js.Object, _: ?[]const u8, _url: ?[]const u8, page: *Page) !void {

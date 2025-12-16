@@ -102,7 +102,7 @@ pub const Page = struct {
 
     notified_network_idle: IdleNotification = .init,
     notified_network_almost_idle: IdleNotification = .init,
-    auto_enable_dom_monitoring: bool = false,
+    auto_enable_dom_monitoring: bool = true,
 
     resource_content: std.ArrayList(u8) = .empty,
 
@@ -176,6 +176,11 @@ pub const Page = struct {
         self.load_state = .parsing;
         self.mode = .{ .pre = {} };
         _ = self.session.browser.page_arena.reset(.{ .retain_with_limit = 1 * 1024 * 1024 });
+
+        // reset js context
+        self.session.executor.removeContext();
+        self.js = try self.session.executor.createContext(self, true, js.GlobalMissingCallback.init(&self.polyfill_loader));
+        try polyfill.preload(self.arena, self.js);
 
         try self.registerBackgroundTasks();
     }
