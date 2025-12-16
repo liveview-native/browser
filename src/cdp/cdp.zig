@@ -437,6 +437,7 @@ pub fn BrowserContext(comptime CDP_T: type) type {
             try cdp.browser.notification.register(.page_created, self, onPageCreated);
             try cdp.browser.notification.register(.page_navigate, self, onPageNavigate);
             try cdp.browser.notification.register(.page_navigated, self, onPageNavigated);
+            try cdp.browser.notification.register(.history_state_updated, self, onHistoryStateUpdated);
         }
 
         fn initWithSession(self: *Self, id: []const u8, cdp: *CDP_T, session: *Session) !void {
@@ -477,6 +478,7 @@ pub fn BrowserContext(comptime CDP_T: type) type {
             try cdp.browser.notification.register(.page_created, self, onPageCreated);
             try cdp.browser.notification.register(.page_navigate, self, onPageNavigate);
             try cdp.browser.notification.register(.page_navigated, self, onPageNavigated);
+            try cdp.browser.notification.register(.history_state_updated, self, onHistoryStateUpdated);
         }
 
         pub fn deinit(self: *Self) void {
@@ -775,6 +777,24 @@ pub fn BrowserContext(comptime CDP_T: type) type {
                 },
                 .timestamp = data.timestamp,
             }, .{ .session_id = self.session_id });
+        }
+
+        pub fn onHistoryStateUpdated(ctx: *anyopaque, event: *const Notification.HistoryStateUpdated) !void {
+            const self: *Self = @ptrCast(@alignCast(ctx));
+            const session_id = self.session_id orelse return;
+            const target_id = self.target_id orelse return;
+            
+            // Send Page.navigatedWithinDocument
+            try self.cdp.sendEvent("Page.navigatedWithinDocument", .{
+                .frameId = target_id,
+                .url = event.url,
+            }, .{ .session_id = session_id });
+
+            // OPTIONAL: If your client strictly waits for "DOM.documentUpdated", force it here too.
+            // However, react-router usually just updates the DOM structure, which 
+            // should be caught by your DOM Mutation Observer (autoEnableDOMMonitoring).
+            // If that observer is flaky, uncommenting the line below might force a refresh.
+            try self.cdp.sendEvent("DOM.documentUpdated", null, .{ .session_id = session_id });
         }
 
         fn resetNotificationArena(self: *Self) void {

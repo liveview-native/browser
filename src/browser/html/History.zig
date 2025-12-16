@@ -61,27 +61,51 @@ pub fn get_state(_: *History, page: *Page) !?js.Value {
 pub fn _pushState(_: *const History, state: js.Object, _: ?[]const u8, _url: ?[]const u8, page: *Page) !void {
     const arena = page.session.arena;
 
-    // Resolve the incoming URL (which might be relative) against the current page URL
+    // 1. Resolve the URL (your existing fix)
     const current_url = page.url.raw;
     const url_arg = _url orelse current_url;
     const resolved_url = try URL.stitch(arena, url_arg, current_url, .{});
 
-    // Update the Page's URL immediately so window.location reflects the change
+    // 2. Update Page URL (your existing fix)
     const new_url_parsed = try URL.parse(resolved_url, null);
     page.url = new_url_parsed;
 
+    // 3. [FIX] Update Window.Location so 'window.location.href' is correct immediately
+    // This requires the set_url method added in Step 1
+    try page.window.location.set_url(resolved_url);
+
+    try page.window.changeLocation(resolved_url, page);
+
+    // 4. Update History Entry
     const json = state.toJson(arena) catch return error.DataClone;
-    
-    // Pass the fully resolved URL to the navigation entry
     _ = try page.session.navigation.pushEntry(resolved_url, .{ .source = .history, .value = json }, page, true);
+
+    page.session.browser.notification.dispatch(.history_state_updated, &.{
+        .url = resolved_url,
+        .type = .push,
+    });
 }
 
 pub fn _replaceState(_: *const History, state: js.Object, _: ?[]const u8, _url: ?[]const u8, page: *Page) !void {
     const arena = page.session.arena;
-    const url = if (_url) |u| try arena.dupe(u8, u) else try arena.dupe(u8, page.url.raw);
+
+    const current_url = page.url.raw;
+    const url_arg = _url orelse current_url;
+    
+    const resolved_url = try URL.stitch(arena, url_arg, current_url, .{});
+
+    const new_url_parsed = try URL.parse(resolved_url, null);
+    page.url = new_url_parsed;
+
+    try page.window.changeLocation(resolved_url, page);
 
     const json = try state.toJson(arena);
-    _ = try page.session.navigation.replaceEntry(url, .{ .source = .history, .value = json }, page, true);
+    _ = try page.session.navigation.replaceEntry(resolved_url, .{ .source = .history, .value = json }, page, true);
+
+    page.session.browser.notification.dispatch(.history_state_updated, &.{
+        .url = resolved_url,
+        .type = .replace,
+    });
 }
 
 pub fn go(_: *const History, delta: i32, page: *Page) !void {

@@ -74,6 +74,8 @@ pub const Notification = struct {
         web_socket_handshake_response_received: List = .{},
         web_socket_frame_sent: List = .{},
         web_socket_frame_received: List = .{},
+
+        history_state_updated: List = .{},
     };
 
     const Events = union(enum) {
@@ -97,8 +99,18 @@ pub const Notification = struct {
         web_socket_handshake_response_received: *const WebSocketHandshakeResponseReceived,
         web_socket_frame_sent: *const WebSocketFrameSent,
         web_socket_frame_received: *const WebSocketFrameReceived,
+
+        history_state_updated: *const HistoryStateUpdated,
     };
     const EventType = std.meta.FieldEnum(Events);
+
+    pub const HistoryStateUpdated = struct {
+        url: []const u8,
+        type: enum {
+            push,
+            replace
+        }
+    };
 
     pub const PageRemove = struct {};
 

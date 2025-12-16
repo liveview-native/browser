@@ -106,6 +106,12 @@ pub const Location = struct {
     pub fn _toString(self: *Location, page: *Page) ![]const u8 {
         return self.get_href(page);
     }
+
+    pub fn set_url(self: *Location, url: []const u8) !void {
+        // We use initForLocation to ensure the URL is parsed correctly for the Location object
+        // (This handles using the specific browser/url/url.zig type)
+        self.url = try URL.initForLocation(url);
+    }
 };
 
 const testing = @import("../../testing.zig");
