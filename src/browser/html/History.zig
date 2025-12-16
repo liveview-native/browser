@@ -61,22 +61,19 @@ pub fn get_state(_: *History, page: *Page) !?js.Value {
 pub fn _pushState(_: *const History, state: js.Object, _: ?[]const u8, _url: ?[]const u8, page: *Page) !void {
     const arena = page.session.arena;
 
-    // 1. Resolve the URL (your existing fix)
+    // resolve the URL
     const current_url = page.url.raw;
     const url_arg = _url orelse current_url;
     const resolved_url = try URL.stitch(arena, url_arg, current_url, .{});
 
-    // 2. Update Page URL (your existing fix)
+    // update Page URL
     const new_url_parsed = try URL.parse(resolved_url, null);
     page.url = new_url_parsed;
 
-    // 3. [FIX] Update Window.Location so 'window.location.href' is correct immediately
-    // This requires the set_url method added in Step 1
-    try page.window.location.set_url(resolved_url);
-
+    // sync with Location
     try page.window.changeLocation(resolved_url, page);
 
-    // 4. Update History Entry
+    // update history entry
     const json = state.toJson(arena) catch return error.DataClone;
     _ = try page.session.navigation.pushEntry(resolved_url, .{ .source = .history, .value = json }, page, true);
 

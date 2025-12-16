@@ -789,12 +789,6 @@ pub fn BrowserContext(comptime CDP_T: type) type {
                 .frameId = target_id,
                 .url = event.url,
             }, .{ .session_id = session_id });
-
-            // OPTIONAL: If your client strictly waits for "DOM.documentUpdated", force it here too.
-            // However, react-router usually just updates the DOM structure, which 
-            // should be caught by your DOM Mutation Observer (autoEnableDOMMonitoring).
-            // If that observer is flaky, uncommenting the line below might force a refresh.
-            try self.cdp.sendEvent("DOM.documentUpdated", null, .{ .session_id = session_id });
         }
 
         fn resetNotificationArena(self: *Self) void {
