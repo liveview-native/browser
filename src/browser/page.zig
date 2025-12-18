@@ -106,6 +106,8 @@ pub const Page = struct {
 
     resource_content: std.ArrayList(u8) = .empty,
 
+    document_id: u64 = 0,
+
     const Mode = union(enum) {
         pre: void,
         err: anyerror,
@@ -150,6 +152,7 @@ pub const Page = struct {
             .keydown_event_node = .{ .func = keydownCallback },
             .window_clicked_event_node = .{ .func = windowClicked },
             .js = undefined,
+            .document_id = std.crypto.random.int(u64),
         };
 
         self.js = try session.executor.createContext(self, true, js.GlobalMissingCallback.init(&self.polyfill_loader));
@@ -172,6 +175,8 @@ pub const Page = struct {
         self.scheduler.reset();
         self.http_client.abort();
         self.script_manager.reset();
+
+        self.document_id = std.crypto.random.int(u64);
 
         self.load_state = .parsing;
         self.mode = .{ .pre = {} };

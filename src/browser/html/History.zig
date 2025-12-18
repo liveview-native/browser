@@ -117,13 +117,13 @@ pub fn go(_: *const History, delta: i32, page: *Page) !void {
     const index = @as(usize, @intCast(index_s));
     const entry = page.session.navigation.entries.items[index];
 
+    _ = try page.session.navigation.navigate(entry.url, .{ .traverse = index }, page);
+
     if (entry.url) |url| {
         if (try page.isSameOrigin(url)) {
             PopStateEvent.dispatch(entry.state.value, page);
         }
     }
-
-    _ = try page.session.navigation.navigate(entry.url, .{ .traverse = index }, page);
 }
 
 pub fn _go(self: *History, _delta: ?i32, page: *Page) !void {

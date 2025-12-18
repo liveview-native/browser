@@ -71,6 +71,8 @@ pub const NavigationHistoryEntry = struct {
     url: ?[]const u8,
     state: NavigationState,
 
+    document_id: u64 = 0,
+
     pub fn get_id(self: *const NavigationHistoryEntry) []const u8 {
         return self.id;
     }

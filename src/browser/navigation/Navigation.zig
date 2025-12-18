@@ -162,6 +162,7 @@ pub fn pushEntry(
         .key = id_str,
         .url = url,
         .state = state,
+        .document_id = page.document_id,
     };
 
     // we don't always have a current entry...
@@ -200,6 +201,7 @@ pub fn replaceEntry(
         .key = previous.key,
         .url = url,
         .state = state,
+        .document_id = page.document_id,
     };
 
     self.entries.items[self.index] = entry;
@@ -244,11 +246,11 @@ pub fn navigate(
     const new_url_string = try URL.stitch(arena, url, page.url.raw, .{});
     const new_url = try URL.parse(new_url_string, null);
 
-    const is_same_document = try page.url.eqlDocument(&new_url, arena);
+    const is_same_document_url = try page.url.eqlDocument(&new_url, arena);
 
     switch (kind) {
         .push => |state| {
-            if (is_same_document) {
+            if (is_same_document_url) {
                 page.url = new_url;
 
                 try committed.resolve({});
@@ -261,7 +263,7 @@ pub fn navigate(
             }
         },
         .replace => |state| {
-            if (is_same_document) {
+            if (is_same_document_url) {
                 page.url = new_url;
 
                 try committed.resolve({});
@@ -276,8 +278,13 @@ pub fn navigate(
         .traverse => |index| {
             self.index = index;
 
-            if (is_same_document) {
+            const entry = self.entries.items[index];
+            const is_same_document_history = entry.document_id == page.document_id;
+
+            if (is_same_document_history) {
                 page.url = new_url;
+
+                try page.window.changeLocation(page.url.raw, page);
 
                 try committed.resolve({});
                 // todo: Fire navigate event
