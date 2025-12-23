@@ -1141,18 +1141,25 @@ pub fn dynamicModuleCallback(
 
     const self = fromC(c_context.?);
 
-    const resource = self.jsStringToZig(.{ .handle = resource_name.? }, .{}) catch |err| {
-        log.err(.app, "OOM", .{ .err = err, .src = "dynamicModuleCallback1" });
-        return @constCast(self.rejectPromise("Out of memory").handle);
+    // FIX: Use `valueToString` because resource_name is a v8.Value, not v8.String.
+    // This handles cases where resource_name is 'undefined'.
+    const resource = if (resource_name) |res|
+        self.valueToString(.{ .handle = res }, .{}) catch "anonymous"
+    else
+        "anonymous";
+
+    // Recommended: Safely handle v8_specifier being null just in case
+    const specifier_handle = v8_specifier orelse {
+         return @constCast(self.rejectPromise("Invalid specifier").handle);
     };
 
-    const specifier = self.jsStringToZig(.{ .handle = v8_specifier.? }, .{}) catch |err| {
+    const specifier = self.jsStringToZig(.{ .handle = specifier_handle }, .{}) catch |err| {
         log.err(.app, "OOM", .{ .err = err, .src = "dynamicModuleCallback2" });
         return @constCast(self.rejectPromise("Out of memory").handle);
     };
 
     const normalized_specifier = self.script_manager.?.resolveSpecifier(
-        self.arena, // might need to survive until the module is loaded
+        self.arena,
         specifier,
         resource,
     ) catch |err| {
@@ -1233,10 +1240,9 @@ const DynamicModuleResolveState = struct {
 fn _dynamicModuleCallback(self: *Context, specifier: [:0]const u8, referrer: []const u8) !v8.Promise {
     const isolate = self.isolate;
     const gop = try self.module_cache.getOrPut(self.arena, specifier);
+    
+    // If there is already an active async loader, just return its promise.
     if (gop.found_existing and gop.value_ptr.resolver_promise != null) {
-        // This is easy, there's already something responsible
-        // for loading the module. Maybe it's still loading, maybe
-        // it's complete. Whatever, we can just return that promise.
         return gop.value_ptr.resolver_promise.?.castToPromise();
     }
 
@@ -1252,60 +1258,47 @@ fn _dynamicModuleCallback(self: *Context, specifier: [:0]const u8, referrer: []c
         .context_id = self.id,
         .resolver = persistent_resolver,
     };
-
     const persisted_promise = PersistentPromise.init(self.isolate, resolver.getPromise());
     const promise = persisted_promise.castToPromise();
 
-    if (!gop.found_existing) {
-        // this module hasn't been seen before. This is the most
-        // complicated path.
+    // FIX: Check if the module is null. If found_existing is true but module is null, 
+    // it means a previous sync load failed (zombie entry). We must retry loading it.
+    if (!gop.found_existing or gop.value_ptr.module == null) {
+        
+        // FIX: Ensure the key is owned by the arena, as 'specifier' might be temporary 
+        // (from call_arena). Only necessary if we are inserting a brand new entry.
+        if (!gop.found_existing) {
+             const owned_specifier = try self.arena.dupeZ(u8, specifier);
+             gop.key_ptr.* = owned_specifier;
+        }
 
-        // First, we'll setup a bare entry into our cache. This will
-        // prevent anyone one else from trying to asychronously load
-        // it. Instead, they can just return our promise.
         gop.value_ptr.* = ModuleEntry{
             .module = null,
             .module_promise = null,
             .resolver_promise = persisted_promise,
         };
-
-        // Next, we need to actually load it.
+        
         self.script_manager.?.getAsyncImport(specifier, dynamicModuleSourceCallback, state, referrer) catch |err| {
             const error_msg = v8.String.initUtf8(isolate, @errorName(err));
             _ = resolver.reject(self.v8_context, error_msg.toValue());
         };
 
-        // For now, we're done. but this will be continued in
-        // `dynamicModuleSourceCallback`, once the source for the
-        // moduel is loaded.
         return promise;
     }
 
-    // So we have a module, but no async resolver. This can only
-    // happen if the module was first synchronously loaded (Does that
-    // ever even happen?!) You'd think we cann just return the module
-    // but no, we need to resolve the module namespace, and the
-    // module could still be loading!
-    // We need to do part of what the first case is going to do in
-    // `dynamicModuleSourceCallback`, but we can skip some steps
-    // since the module is alrady loaded,
+    // So we have a module, but no async resolver.
     std.debug.assert(gop.value_ptr.module != null);
-
-    // If the module hasn't been evaluated yet (it was only instantiated
-    // as a static import dependency), we need to evaluate it now.
+    
     if (gop.value_ptr.module_promise == null) {
         const mod = gop.value_ptr.module.?.castToModule();
         const status = mod.getStatus();
         if (status == .kEvaluated or status == .kEvaluating) {
-            // Module was already evaluated (shouldn't normally happen, but handle it).
-            // Create a pre-resolved promise with the module namespace.
             const persisted_module_resolver = v8.Persistent(v8.PromiseResolver).init(isolate, v8.PromiseResolver.init(self.v8_context));
             try self.persisted_promise_resolvers.append(self.arena, persisted_module_resolver);
             var module_resolver = persisted_module_resolver.castToPromiseResolver();
             _ = module_resolver.resolve(self.v8_context, mod.getModuleNamespace());
             gop.value_ptr.module_promise = PersistentPromise.init(self.isolate, module_resolver.getPromise());
         } else {
-            // the module was loaded, but not evaluated, we _have_ to evaluate it now
             const evaluated = mod.evaluate(self.v8_context) catch {
                 std.debug.assert(status == .kErrored);
                 const error_msg = v8.String.initUtf8(isolate, "Module evaluation failed");
@@ -1317,13 +1310,8 @@ fn _dynamicModuleCallback(self: *Context, specifier: [:0]const u8, referrer: []c
         }
     }
 
-    // like before, we want to set this up so that if anything else
-    // tries to load this module, it can just return our promise
-    // since we're going to be doing all the work.
     gop.value_ptr.resolver_promise = persisted_promise;
 
-    // But we can skip direclty to `resolveDynamicModule` which is
-    // what the above callback will eventually do.
     self.resolveDynamicModule(state, gop.value_ptr.*);
     return promise;
 }
