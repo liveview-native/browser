@@ -297,7 +297,14 @@ pub fn module(self: *Context, comptime want_result: bool, src: []const u8, url: 
 
     // and the module must have been set after we compiled it
     std.debug.assert(entry.module != null);
-    std.debug.assert(entry.module_promise == null);
+
+    // module_promise may already be set if a dynamic import (`import()`) raced with
+    // this static module evaluation and resolved first. In V8, re-evaluating an
+    // already-evaluated module returns the same promise, so we can safely skip
+    // setting it again.
+    if (entry.module_promise != null) {
+        return if (comptime want_result) entry.* else {};
+    }
 
     entry.module_promise = PersistentPromise.init(self.isolate, .{ .handle = evaluated.handle });
     return if (comptime want_result) entry.* else {};
@@ -1150,7 +1157,7 @@ pub fn dynamicModuleCallback(
 
     // Recommended: Safely handle v8_specifier being null just in case
     const specifier_handle = v8_specifier orelse {
-         return @constCast(self.rejectPromise("Invalid specifier").handle);
+        return @constCast(self.rejectPromise("Invalid specifier").handle);
     };
 
     const specifier = self.jsStringToZig(.{ .handle = specifier_handle }, .{}) catch |err| {
@@ -1240,7 +1247,7 @@ const DynamicModuleResolveState = struct {
 fn _dynamicModuleCallback(self: *Context, specifier: [:0]const u8, referrer: []const u8) !v8.Promise {
     const isolate = self.isolate;
     const gop = try self.module_cache.getOrPut(self.arena, specifier);
-    
+
     // If there is already an active async loader, just return its promise.
     if (gop.found_existing and gop.value_ptr.resolver_promise != null) {
         return gop.value_ptr.resolver_promise.?.castToPromise();
@@ -1261,15 +1268,15 @@ fn _dynamicModuleCallback(self: *Context, specifier: [:0]const u8, referrer: []c
     const persisted_promise = PersistentPromise.init(self.isolate, resolver.getPromise());
     const promise = persisted_promise.castToPromise();
 
-    // FIX: Check if the module is null. If found_existing is true but module is null, 
+    // FIX: Check if the module is null. If found_existing is true but module is null,
     // it means a previous sync load failed (zombie entry). We must retry loading it.
     if (!gop.found_existing or gop.value_ptr.module == null) {
-        
-        // FIX: Ensure the key is owned by the arena, as 'specifier' might be temporary 
+
+        // FIX: Ensure the key is owned by the arena, as 'specifier' might be temporary
         // (from call_arena). Only necessary if we are inserting a brand new entry.
         if (!gop.found_existing) {
-             const owned_specifier = try self.arena.dupeZ(u8, specifier);
-             gop.key_ptr.* = owned_specifier;
+            const owned_specifier = try self.arena.dupeZ(u8, specifier);
+            gop.key_ptr.* = owned_specifier;
         }
 
         gop.value_ptr.* = ModuleEntry{
@@ -1277,7 +1284,7 @@ fn _dynamicModuleCallback(self: *Context, specifier: [:0]const u8, referrer: []c
             .module_promise = null,
             .resolver_promise = persisted_promise,
         };
-        
+
         self.script_manager.?.getAsyncImport(specifier, dynamicModuleSourceCallback, state, referrer) catch |err| {
             const error_msg = v8.String.initUtf8(isolate, @errorName(err));
             _ = resolver.reject(self.v8_context, error_msg.toValue());
@@ -1288,7 +1295,7 @@ fn _dynamicModuleCallback(self: *Context, specifier: [:0]const u8, referrer: []c
 
     // So we have a module, but no async resolver.
     std.debug.assert(gop.value_ptr.module != null);
-    
+
     if (gop.value_ptr.module_promise == null) {
         const mod = gop.value_ptr.module.?.castToModule();
         const status = mod.getStatus();

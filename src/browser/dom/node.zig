@@ -238,18 +238,14 @@ pub const Node = struct {
         // If this is a character data node, manually dispatch DOMCharacterDataModified
         if (node_type == parser.NodeType.text or
             node_type == parser.NodeType.comment or
-            node_type == parser.NodeType.cdata_section) {
+            node_type == parser.NodeType.cdata_section)
+        {
 
             // Get the document to dispatch the event
             const doc = parser.nodeOwnerDocument(self);
 
             // Dispatch DOMCharacterDataModified event
-            _ = parser.dispatchCharacterDataModifiedEvent(
-                doc.?,
-                self,
-                old_value,
-                data
-            ) catch {}; // Don't fail the whole operation if event dispatch fails
+            _ = parser.dispatchCharacterDataModifiedEvent(doc.?, self, old_value, data) catch {}; // Don't fail the whole operation if event dispatch fails
         }
     }
 
@@ -509,6 +505,11 @@ pub const Node = struct {
     pub fn _replaceChild(self: *parser.Node, new_child: *parser.Node, old_child: *parser.Node) !Union {
         const res = try parser.nodeReplaceChild(self, new_child, old_child);
         return try Node.toInterface(res);
+    }
+
+    pub fn _remove(self: *parser.Node) !void {
+        const parent = parser.nodeParentNode(self) orelse return;
+        _ = try parser.nodeRemoveChild(parent, self);
     }
 
     // Check if the hierarchy node tree constraints are respected.
